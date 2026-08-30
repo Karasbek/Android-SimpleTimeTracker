@@ -430,6 +430,6 @@ fun main() = application {
             height = 720.dp,
         ),
     ) {
-        DesktopApp(database)
+        DesktopAppV2(database)
     }
 }
