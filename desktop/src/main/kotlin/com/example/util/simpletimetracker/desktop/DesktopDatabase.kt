@@ -119,7 +119,7 @@ class DesktopDatabase {
         return DriverManager.getConnection("jdbc:sqlite:${path.toAbsolutePath()}")
     }
 
-    private fun nextId(db: Connection): Long {
+    internal fun nextId(db: Connection): Long {
         val values = db.prepareStatement(
             "SELECT namespace, next_counter FROM desktop_id_allocator WHERE id = 1",
         ).use { query ->

@@ -245,3 +245,62 @@ fun DesktopDatabase.deleteRecord(
     }
 }
 
+
+fun DesktopDatabase.addManualRecord(
+    activityId: Long,
+    startedAt: Long,
+    endedAt: Long,
+    comment: String,
+) {
+    require(endedAt > startedAt) {
+        "Конец должен быть позже начала"
+    }
+
+    crudConnection().use { db ->
+        db.autoCommit = false
+
+        try {
+            val activityExists = db.prepareStatement(
+                "SELECT COUNT(*) FROM recordTypes WHERE id = ?",
+            ).use { query ->
+                query.setLong(1, activityId)
+                query.executeQuery().use { result ->
+                    result.next()
+                    result.getInt(1) == 1
+                }
+            }
+
+            check(activityExists) {
+                "Активность не найдена"
+            }
+
+            val recordId = nextId(db)
+
+            db.prepareStatement(
+                """
+                INSERT INTO records(
+                    id,
+                    type_id,
+                    time_started,
+                    time_ended,
+                    comment,
+                    tag_id
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """.trimIndent(),
+            ).use { insert ->
+                insert.setLong(1, recordId)
+                insert.setLong(2, activityId)
+                insert.setLong(3, startedAt)
+                insert.setLong(4, endedAt)
+                insert.setString(5, comment)
+                insert.setLong(6, 0)
+                insert.executeUpdate()
+            }
+
+            db.commit()
+        } catch (e: Throwable) {
+            db.rollback()
+            throw e
+        }
+    }
+}

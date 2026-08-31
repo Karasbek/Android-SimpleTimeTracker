@@ -627,6 +627,7 @@ private fun TrackerV2(
 @Composable
 private fun HistoryV2(
     database: DesktopDatabase,
+    activities: List<ActivityRow>,
     records: List<DayRecordRow>,
     date: LocalDate,
     today: LocalDate,
@@ -645,13 +646,23 @@ private fun HistoryV2(
     Column(
         modifier = Modifier.fillMaxSize(),
     ) {
-        DayNavigation(
+
+                DayNavigation(
             date = date,
             today = today,
             onChange = onDateChanged,
         )
 
         Spacer(Modifier.height(14.dp))
+
+        ManualRecordButton(
+            database = database,
+            activities = activities,
+            date = date,
+            onChanged = onChanged,
+        )
+
+        Spacer(Modifier.height(10.dp))
 
         Text(
             "Всего: ${durationText(total)}",
@@ -1160,10 +1171,13 @@ fun DesktopAppV2(
                                 },
                             )
 
-                        DesktopTab.HISTORY ->
+
+                                DesktopTab.HISTORY ->
                             HistoryV2(
                                 database =
                                     database,
+                                activities =
+                                    activities,
                                 records =
                                     selectedRecords,
                                 date =
