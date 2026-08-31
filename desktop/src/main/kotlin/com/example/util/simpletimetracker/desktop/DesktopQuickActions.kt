@@ -132,6 +132,24 @@ class DesktopQuickActions(
         return result
     }
 
+    /** Records-screen Continue/Repeat follows the same timer flow as tray repeat. */
+    @Synchronized
+    fun repeatRecord(record: DesktopTimelineRecord): RepeatPreviousResult {
+        val result = when (timerService.repeat(
+            DesktopPreviousRecord(
+                activityId = record.activityId,
+                comment = record.comment,
+                tags = record.tags.map { DesktopRecordTag(it.tagId, it.numericValue) },
+            ),
+        )) {
+            TimerActionResult.STARTED, TimerActionResult.COMPLETED -> RepeatPreviousResult.STARTED
+            TimerActionResult.ALREADY_RUNNING -> RepeatPreviousResult.ALREADY_RUNNING
+            else -> RepeatPreviousResult.NO_PREVIOUS
+        }
+        publish(buildState())
+        return result
+    }
+
     private fun buildState(): DesktopTrayState {
         val activities = repository.activities()
         val byId = activities.associateBy(ActivityRow::id)

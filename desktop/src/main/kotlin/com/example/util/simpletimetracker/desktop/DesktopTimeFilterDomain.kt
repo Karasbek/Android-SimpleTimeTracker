@@ -1,6 +1,15 @@
 package com.example.util.simpletimetracker.desktop
 
 import java.sql.Connection
+import java.time.DayOfWeek
+import java.time.Instant
+import java.time.ZoneId
+import kotlin.math.max
+import kotlin.math.min
+
+enum class DesktopCommentFilter { ANY, NO_COMMENT, HAS_COMMENT, CONTAINS }
+enum class DesktopDuplicateFilter { NONE, SAME_TIMES, SAME_ACTIVITY }
+enum class DesktopRecordKindFilter { ALL, COMPLETED, RUNNING, UNTRACKED }
 
 data class DesktopRecordFilter(
     val includedActivityIds: Set<Long> = emptySet(),
@@ -13,6 +22,21 @@ data class DesktopRecordFilter(
     val excludedTagIds: Set<Long> = emptySet(),
     val includeUntagged: Boolean = false,
     val excludeUntagged: Boolean = false,
+    val commentFilter: DesktopCommentFilter = DesktopCommentFilter.ANY,
+    val commentQuery: String = "",
+    /** Optional absolute half-open date range, matching Android RecordsFilter.Date. */
+    val dateRange: DesktopTimeRange? = null,
+    val daysOfWeek: Set<DayOfWeek> = emptySet(),
+    /** Milliseconds after local midnight. A range crossing midnight has start > end. */
+    val timeOfDayStartMillis: Long? = null,
+    val timeOfDayEndMillis: Long? = null,
+    val minDurationMillis: Long? = null,
+    val maxDurationMillis: Long? = null,
+    val recordKind: DesktopRecordKindFilter = DesktopRecordKindFilter.ALL,
+    val multitaskOnly: Boolean = false,
+    val duplicates: DesktopDuplicateFilter = DesktopDuplicateFilter.NONE,
+    /** Android ManuallyFiltered is an exclusion list. */
+    val manuallyExcludedRecordIds: Set<Long> = emptySet(),
 ) {
     companion object {
         val EMPTY = DesktopRecordFilter()
@@ -29,6 +53,7 @@ data class DesktopTimelineRecord(
     val tags: List<DesktopRecordTagView>,
     val categoryIds: Set<Long>,
     val isRunning: Boolean,
+    val isUntracked: Boolean = false,
     val icon: String = "",
     val colorInt: String = "",
 )
@@ -71,12 +96,26 @@ class DesktopSavedFilterService(
 
 class DesktopRecordsRangeService(
     private val database: DesktopDatabase,
+    private val preferences: DesktopSemanticPreferences? = null,
     private val currentTimeMillis: () -> Long = System::currentTimeMillis,
 ) {
-    fun get(range: DesktopTimeRange, filter: DesktopRecordFilter = DesktopRecordFilter.EMPTY): List<DesktopTimelineRecord> {
+    fun get(
+        range: DesktopTimeRange,
+        filter: DesktopRecordFilter = DesktopRecordFilter.EMPTY,
+        includeUntracked: Boolean = filter.recordKind == DesktopRecordKindFilter.UNTRACKED,
+    ): List<DesktopTimelineRecord> {
         val now = currentTimeMillis()
-        return (database.completedTimelineRecords(range) + database.runningTimelineRecords(range, now))
-            .filter { filter.matches(it) }
+        val tracked = database.completedTimelineRecords(range) + database.runningTimelineRecords(range, now)
+        val records = if (includeUntracked) {
+            tracked + DesktopUntrackedRecords.calculate(
+                records = tracked,
+                range = range,
+                now = now,
+                minimumDurationMillis = (preferences?.ignoreShortUntrackedDurationSeconds ?: 60L) * 1_000L,
+            )
+        } else tracked
+        return records
+            .filter { filter.matches(it, range, tracked, preferences?.startOfDayShiftMillis ?: 0L) }
             .sortedWith(compareByDescending<DesktopTimelineRecord> { it.startedAt }.thenByDescending { it.id })
     }
 
@@ -93,7 +132,38 @@ class DesktopRecordsRangeService(
         }
 }
 
-private fun DesktopRecordFilter.matches(record: DesktopTimelineRecord): Boolean {
+private fun DesktopRecordFilter.matches(
+    record: DesktopTimelineRecord,
+    displayedRange: DesktopTimeRange,
+    tracked: List<DesktopTimelineRecord>,
+    startOfDayShiftMillis: Long,
+): Boolean {
+    if (record.id in manuallyExcludedRecordIds) return false
+    if (recordKind == DesktopRecordKindFilter.UNTRACKED && !record.isUntracked) return false
+    if (recordKind == DesktopRecordKindFilter.RUNNING && !record.isRunning) return false
+    if (recordKind == DesktopRecordKindFilter.COMPLETED && (record.isRunning || record.isUntracked)) return false
+    dateRange?.let { if (!it.intersects(record.startedAt, record.endedAt)) return false }
+    val duration = displayedRange.clippedDuration(record.startedAt, record.endedAt)
+    minDurationMillis?.let { if (duration < it) return false }
+    maxDurationMillis?.let { if (duration > it) return false }
+    if (!record.isUntracked) when (commentFilter) {
+        DesktopCommentFilter.ANY -> Unit
+        DesktopCommentFilter.NO_COMMENT -> if (record.comment.isNotEmpty()) return false
+        DesktopCommentFilter.HAS_COMMENT -> if (record.comment.isEmpty()) return false
+        DesktopCommentFilter.CONTAINS -> if (!record.comment.contains(commentQuery, ignoreCase = true)) return false
+    }
+    if (daysOfWeek.isNotEmpty() && !record.matchesAnyUserDay(daysOfWeek, startOfDayShiftMillis)) return false
+    if (timeOfDayStartMillis != null && timeOfDayEndMillis != null &&
+        !record.overlapsTimeOfDay(timeOfDayStartMillis, timeOfDayEndMillis)
+    ) return false
+    // Android permits only Date/DaysOfWeek/TimeOfDay/Duration alongside
+    // its Untracked filter. It is a synthetic record and has no taxonomy.
+    if (record.isUntracked) return recordKind == DesktopRecordKindFilter.UNTRACKED || recordKind == DesktopRecordKindFilter.ALL
+    if (multitaskOnly && tracked.none { other ->
+            other.id != record.id && other.startedAt < record.endedAt && other.endedAt > record.startedAt
+        }
+    ) return false
+    if (duplicates != DesktopDuplicateFilter.NONE && !record.isDuplicateOf(tracked, duplicates)) return false
     val hasSelectedActivityCriterion =
         includedActivityIds.isNotEmpty() || includedCategoryIds.isNotEmpty() || includeUncategorized
     val activitySelected = !hasSelectedActivityCriterion ||
@@ -111,6 +181,94 @@ private fun DesktopRecordFilter.matches(record: DesktopTimelineRecord): Boolean 
     val tagFiltered = tagIds.any { it in excludedTagIds } || (excludeUntagged && tagIds.isEmpty())
 
     return activitySelected && !activityFiltered && tagSelected && !tagFiltered
+}
+
+private fun DesktopTimelineRecord.matchesAnyUserDay(days: Set<DayOfWeek>, startOfDayShiftMillis: Long): Boolean {
+    val zone = ZoneId.systemDefault()
+    var date = Instant.ofEpochMilli(startedAt - startOfDayShiftMillis).atZone(zone).toLocalDate()
+    val endDate = Instant.ofEpochMilli(endedAt.coerceAtLeast(startedAt) - startOfDayShiftMillis).atZone(zone).toLocalDate()
+    while (!date.isAfter(endDate)) {
+        if (date.dayOfWeek in days) return true
+        date = date.plusDays(1)
+    }
+    return false
+}
+
+private fun DesktopTimelineRecord.overlapsTimeOfDay(start: Long, end: Long): Boolean {
+    if (start == end) return false
+    val zone = ZoneId.systemDefault()
+    var date = Instant.ofEpochMilli(startedAt).atZone(zone).toLocalDate().minusDays(1)
+    val last = Instant.ofEpochMilli(endedAt).atZone(zone).toLocalDate()
+    while (!date.isAfter(last)) {
+        val midnight = date.atStartOfDay(zone).toInstant().toEpochMilli()
+        val intervalStart = midnight + start
+        val intervalEnd = midnight + end + if (end <= start) 86_400_000L else 0L
+        if (startedAt < intervalEnd && endedAt > intervalStart) return true
+        date = date.plusDays(1)
+    }
+    return false
+}
+
+private fun DesktopTimelineRecord.isDuplicateOf(
+    all: List<DesktopTimelineRecord>,
+    mode: DesktopDuplicateFilter,
+): Boolean = all.any { other ->
+    other.id != id && !other.isRunning && when (mode) {
+        DesktopDuplicateFilter.SAME_TIMES -> other.startedAt == startedAt && other.endedAt == endedAt
+        DesktopDuplicateFilter.SAME_ACTIVITY -> other.activityId == activityId
+        DesktopDuplicateFilter.NONE -> false
+    }
+}
+
+/** Synthetic untracked intervals; no database rows are ever written for these. */
+object DesktopUntrackedRecords {
+    fun calculate(
+        records: List<DesktopTimelineRecord>,
+        range: DesktopTimeRange,
+        now: Long,
+        minimumDurationMillis: Long,
+    ): List<DesktopTimelineRecord> {
+        val end = min(range.endedAt, now)
+        if (end <= range.startedAt || records.isEmpty()) return emptyList()
+        // Android starts untracked calculation at the first persisted record,
+        // never fabricating a gap before the app has any tracking history.
+        val calculationStart = max(range.startedAt, records.minOf(DesktopTimelineRecord::startedAt))
+        if (end <= calculationStart) return emptyList()
+        val covered = records.mapNotNull { record ->
+            val start = max(calculationStart, record.startedAt)
+            val clippedEnd = min(end, record.endedAt)
+            start.takeIf { it < clippedEnd }?.let { DesktopTimeRange(it, clippedEnd) }
+        }.sortedBy(DesktopTimeRange::startedAt)
+        val merged = covered.fold(mutableListOf<DesktopTimeRange>()) { result, candidate ->
+            val previous = result.lastOrNull()
+            if (previous != null && candidate.startedAt <= previous.endedAt) {
+                result[result.lastIndex] = DesktopTimeRange(previous.startedAt, max(previous.endedAt, candidate.endedAt))
+            } else result += candidate
+            result
+        }
+        val gaps = mutableListOf<DesktopTimeRange>()
+        var cursor = calculationStart
+        merged.forEach { interval ->
+            if (cursor < interval.startedAt) gaps += DesktopTimeRange(cursor, interval.startedAt)
+            cursor = max(cursor, interval.endedAt)
+        }
+        if (cursor < end) gaps += DesktopTimeRange(cursor, end)
+        return gaps.filter { it.endedAt - it.startedAt > minimumDurationMillis }
+            .map { gap ->
+                DesktopTimelineRecord(
+                    id = -gap.startedAt,
+                    activityId = Long.MIN_VALUE,
+                    activityName = "Не отслеживалось",
+                    startedAt = gap.startedAt,
+                    endedAt = gap.endedAt,
+                    comment = "",
+                    tags = emptyList(),
+                    categoryIds = emptySet(),
+                    isRunning = false,
+                    isUntracked = true,
+                )
+            }
+    }
 }
 
 fun DesktopDatabase.completedTimelineRecords(range: DesktopTimeRange): List<DesktopTimelineRecord> {
@@ -228,7 +386,9 @@ private fun DesktopDatabase.runningRecordTagViews(runningRecordId: Long): List<D
 fun DesktopDatabase.savedRecordFilters(): List<DesktopSavedRecordFilter> = crudConnection().use { db ->
     db.prepareStatement(
         """
-        SELECT id, name, include_uncategorized, exclude_uncategorized, include_untagged, exclude_untagged
+            SELECT id, name, include_uncategorized, exclude_uncategorized, include_untagged, exclude_untagged,
+                comment_mode, comment_query, date_started, date_ended, time_of_day_start, time_of_day_end,
+                duration_min, duration_max, show_untracked, multitask_only, duplicates_mode, record_kind
         FROM saved_record_filters
         ORDER BY name COLLATE NOCASE, id
         """.trimIndent(),
@@ -252,6 +412,17 @@ fun DesktopDatabase.savedRecordFilters(): List<DesktopSavedRecordFilter> = crudC
                                 excludedTagIds = savedFilterIds(db, "tags", id, "EXCLUDE"),
                                 includeUntagged = result.getInt("include_untagged") != 0,
                                 excludeUntagged = result.getInt("exclude_untagged") != 0,
+                                commentFilter = enumOrDefault(result.getString("comment_mode"), DesktopCommentFilter.ANY),
+                                commentQuery = result.getString("comment_query"),
+                                dateRange = nullableRange(result, "date_started", "date_ended"),
+                                timeOfDayStartMillis = nullableLong(result, "time_of_day_start"),
+                                timeOfDayEndMillis = nullableLong(result, "time_of_day_end"),
+                                minDurationMillis = nullableLong(result, "duration_min"),
+                                maxDurationMillis = nullableLong(result, "duration_max"),
+                                recordKind = enumOrDefault(result.getString("record_kind"), DesktopRecordKindFilter.ALL),
+                                multitaskOnly = result.getInt("multitask_only") != 0,
+                                duplicates = enumOrDefault(result.getString("duplicates_mode"), DesktopDuplicateFilter.NONE),
+                                daysOfWeek = savedFilterDaysOfWeek(db, id),
                             ),
                         ),
                     )
@@ -273,13 +444,16 @@ fun DesktopDatabase.saveRecordFilter(
             db.prepareStatement(
                 """
                 INSERT INTO saved_record_filters(
-                    id, name, include_uncategorized, exclude_uncategorized, include_untagged, exclude_untagged
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    id, name, include_uncategorized, exclude_uncategorized, include_untagged, exclude_untagged,
+                    comment_mode, comment_query, date_started, date_ended, time_of_day_start, time_of_day_end,
+                    duration_min, duration_max, show_untracked, multitask_only, duplicates_mode, record_kind
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """.trimIndent(),
             ).use { insert ->
                 insert.setLong(1, id)
                 insert.setString(2, name)
                 insert.bindFilterFlags(filter, 3)
+                insert.bindAdvancedFilter(filter, 7)
                 insert.executeUpdate() == 1
             }
         } else {
@@ -287,13 +461,17 @@ fun DesktopDatabase.saveRecordFilter(
                 """
                 UPDATE saved_record_filters SET
                     name = ?, include_uncategorized = ?, exclude_uncategorized = ?,
-                    include_untagged = ?, exclude_untagged = ?
+                    include_untagged = ?, exclude_untagged = ?,
+                    comment_mode = ?, comment_query = ?, date_started = ?, date_ended = ?,
+                    time_of_day_start = ?, time_of_day_end = ?, duration_min = ?, duration_max = ?,
+                    show_untracked = ?, multitask_only = ?, duplicates_mode = ?, record_kind = ?
                 WHERE id = ?
                 """.trimIndent(),
             ).use { update ->
                 update.setString(1, name)
                 update.bindFilterFlags(filter, 2)
-                update.setLong(6, id)
+                update.bindAdvancedFilter(filter, 6)
+                update.setLong(18, id)
                 update.executeUpdate() == 1
             }
         }
@@ -307,12 +485,17 @@ fun DesktopDatabase.saveRecordFilter(
                 delete.executeUpdate()
             }
         }
+        db.prepareStatement("DELETE FROM saved_record_filter_days_of_week WHERE filter_id = ?").use { delete ->
+            delete.setLong(1, id)
+            delete.executeUpdate()
+        }
         saveFilterIds(db, "activities", id, "INCLUDE", filter.includedActivityIds)
         saveFilterIds(db, "activities", id, "EXCLUDE", filter.excludedActivityIds)
         saveFilterIds(db, "tags", id, "INCLUDE", filter.includedTagIds)
         saveFilterIds(db, "tags", id, "EXCLUDE", filter.excludedTagIds)
         saveFilterIds(db, "categories", id, "INCLUDE", filter.includedCategoryIds)
         saveFilterIds(db, "categories", id, "EXCLUDE", filter.excludedCategoryIds)
+        saveFilterDaysOfWeek(db, id, filter.daysOfWeek)
         db.commit()
         id
     } catch (error: Throwable) {
@@ -329,6 +512,10 @@ fun DesktopDatabase.deleteSavedRecordFilter(filterId: Long): Boolean = crudConne
                 delete.setLong(1, filterId)
                 delete.executeUpdate()
             }
+        }
+        db.prepareStatement("DELETE FROM saved_record_filter_days_of_week WHERE filter_id = ?").use { delete ->
+            delete.setLong(1, filterId)
+            delete.executeUpdate()
         }
         val deleted = db.prepareStatement("DELETE FROM saved_record_filters WHERE id = ?").use { delete ->
             delete.setLong(1, filterId)
@@ -371,4 +558,55 @@ private fun java.sql.PreparedStatement.bindFilterFlags(filter: DesktopRecordFilt
     setInt(startIndex + 1, if (filter.excludeUncategorized) 1 else 0)
     setInt(startIndex + 2, if (filter.includeUntagged) 1 else 0)
     setInt(startIndex + 3, if (filter.excludeUntagged) 1 else 0)
+}
+
+private fun java.sql.PreparedStatement.bindAdvancedFilter(filter: DesktopRecordFilter, startIndex: Int) {
+    setString(startIndex, filter.commentFilter.name)
+    setString(startIndex + 1, filter.commentQuery)
+    setNullableLong(startIndex + 2, filter.dateRange?.startedAt)
+    setNullableLong(startIndex + 3, filter.dateRange?.endedAt)
+    setNullableLong(startIndex + 4, filter.timeOfDayStartMillis)
+    setNullableLong(startIndex + 5, filter.timeOfDayEndMillis)
+    setNullableLong(startIndex + 6, filter.minDurationMillis)
+    setNullableLong(startIndex + 7, filter.maxDurationMillis)
+    setInt(startIndex + 8, if (filter.recordKind == DesktopRecordKindFilter.UNTRACKED) 1 else 0)
+    setInt(startIndex + 9, if (filter.multitaskOnly) 1 else 0)
+    setString(startIndex + 10, filter.duplicates.name)
+    setString(startIndex + 11, filter.recordKind.name)
+}
+
+private fun java.sql.PreparedStatement.setNullableLong(index: Int, value: Long?) {
+    if (value == null) setNull(index, java.sql.Types.INTEGER) else setLong(index, value)
+}
+
+private fun nullableLong(result: java.sql.ResultSet, column: String): Long? =
+    result.getLong(column).takeUnless { result.wasNull() }
+
+private fun nullableRange(result: java.sql.ResultSet, start: String, end: String): DesktopTimeRange? {
+    val actualStart = nullableLong(result, start) ?: return null
+    val actualEnd = nullableLong(result, end) ?: return null
+    return DesktopTimeRange(actualStart, actualEnd.coerceAtLeast(actualStart))
+}
+
+private inline fun <reified T : Enum<T>> enumOrDefault(value: String?, default: T): T =
+    value?.let { runCatching { enumValueOf<T>(it) }.getOrNull() } ?: default
+
+private fun savedFilterDaysOfWeek(db: Connection, filterId: Long): Set<DayOfWeek> =
+    db.prepareStatement("SELECT day_of_week FROM saved_record_filter_days_of_week WHERE filter_id = ?").use { query ->
+        query.setLong(1, filterId)
+        query.executeQuery().use { result ->
+            buildSet { while (result.next()) add(DayOfWeek.of(result.getInt(1))) }
+        }
+    }
+
+private fun saveFilterDaysOfWeek(db: Connection, filterId: Long, days: Set<DayOfWeek>) {
+    if (days.isEmpty()) return
+    db.prepareStatement("INSERT INTO saved_record_filter_days_of_week(filter_id, day_of_week) VALUES (?, ?)").use { insert ->
+        days.forEach { day ->
+            insert.setLong(1, filterId)
+            insert.setInt(2, day.value)
+            insert.addBatch()
+        }
+        insert.executeBatch()
+    }
 }

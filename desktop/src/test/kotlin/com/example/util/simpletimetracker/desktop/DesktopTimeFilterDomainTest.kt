@@ -213,6 +213,44 @@ class DesktopTimeFilterDomainTest {
         assertTrue(filters.all().isEmpty())
     }
 
+    @Test
+    fun advancedSavedFilterAndUntrackedIntervalsPersistAndUseUnionCoverage() {
+        val database = database()
+        database.addActivity("Work")
+        val activity = database.activities().single()
+        val records = DesktopRecordService(database)
+        assertEquals(RecordWriteResult.SAVED, records.create(DesktopRecordDraft(activity.id, 100, 250, "alpha", emptyList())))
+        assertEquals(RecordWriteResult.SAVED, records.create(DesktopRecordDraft(activity.id, 200, 350, "", emptyList())))
+
+        val filter = DesktopRecordFilter(
+            commentFilter = DesktopCommentFilter.CONTAINS,
+            commentQuery = "ALP",
+            dateRange = DesktopTimeRange(0, 500),
+            daysOfWeek = setOf(DayOfWeek.MONDAY),
+            timeOfDayStartMillis = 60_000,
+            timeOfDayEndMillis = 120_000,
+            minDurationMillis = 10,
+            maxDurationMillis = 1_000,
+            multitaskOnly = true,
+            duplicates = DesktopDuplicateFilter.SAME_ACTIVITY,
+        )
+        val saved = DesktopSavedFilterService(database).save(name = "Расширенный", filter = filter)
+        assertEquals(DesktopSavedFilterResult.SAVED, saved.first)
+        assertEquals(filter, DesktopSavedFilterService(DesktopDatabase(database.path)).all().single().filter)
+
+        val gaps = DesktopUntrackedRecords.calculate(
+            records = listOf(
+                DesktopTimelineRecord(1, activity.id, "Work", 100, 250, "", emptyList(), emptySet(), false),
+                DesktopTimelineRecord(2, activity.id, "Work", 200, 350, "", emptyList(), emptySet(), false),
+            ),
+            range = DesktopTimeRange(0, 500),
+            now = 500,
+            minimumDurationMillis = 0,
+        )
+        assertEquals(listOf(350L to 500L), gaps.map { it.startedAt to it.endedAt })
+        assertTrue(gaps.all(DesktopTimelineRecord::isUntracked))
+    }
+
     private fun database(): DesktopDatabase = DesktopDatabase(
         Files.createTempDirectory("desktop-time-filter-test").resolve("tracker.sqlite3"),
     )

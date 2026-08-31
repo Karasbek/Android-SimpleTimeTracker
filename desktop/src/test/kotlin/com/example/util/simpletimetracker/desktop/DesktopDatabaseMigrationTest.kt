@@ -174,6 +174,37 @@ class DesktopDatabaseMigrationTest {
         assertTrue(DesktopDatabase(path).savedRecordFilters().isEmpty())
     }
 
+    @Test
+    fun version7MigratesToAdvancedSavedFiltersWithoutLosingExistingFilterRelations() {
+        val path = temporaryPath()
+        val database = DesktopDatabase(path)
+        database.addActivity("Work")
+        val activityId = database.activities().single().id
+        assertEquals(
+            DesktopSavedFilterResult.SAVED,
+            DesktopSavedFilterService(database).save(name = "Work", filter = DesktopRecordFilter(includedActivityIds = setOf(activityId))).first,
+        )
+        connection(path) { db ->
+            db.createStatement().use { statement ->
+                statement.execute("DROP TABLE saved_record_filter_days_of_week")
+                listOf("comment_mode", "comment_query", "date_started", "date_ended", "time_of_day_start", "time_of_day_end", "duration_min", "duration_max", "show_untracked", "multitask_only", "duplicates_mode", "record_kind").forEach { column ->
+                    // SQLite cannot drop old columns portably; a v7 fixture retains columns only when created on newer code.
+                    // Rebuilding below makes this a real pre-v8 saved_filter table.
+                }
+                statement.execute("ALTER TABLE saved_record_filters RENAME TO saved_record_filters_v7")
+                statement.execute("CREATE TABLE saved_record_filters (id INTEGER PRIMARY KEY NOT NULL, name TEXT NOT NULL, include_uncategorized INTEGER NOT NULL DEFAULT 0, exclude_uncategorized INTEGER NOT NULL DEFAULT 0, include_untagged INTEGER NOT NULL DEFAULT 0, exclude_untagged INTEGER NOT NULL DEFAULT 0)")
+                statement.execute("INSERT INTO saved_record_filters(id, name, include_uncategorized, exclude_uncategorized, include_untagged, exclude_untagged) SELECT id, name, include_uncategorized, exclude_uncategorized, include_untagged, exclude_untagged FROM saved_record_filters_v7")
+                statement.execute("DROP TABLE saved_record_filters_v7")
+                statement.execute("PRAGMA user_version = 7")
+            }
+        }
+
+        val migrated = DesktopDatabase(path)
+        assertEquals(DesktopDatabaseSchema.CURRENT_VERSION, userVersion(path))
+        assertEquals(setOf(activityId), migrated.savedRecordFilters().single().filter.includedActivityIds)
+        assertTrue(tableNames(path).contains("saved_record_filter_days_of_week"))
+    }
+
     private fun createLegacyDatabase(path: Path, version: Int, instantDuration: Long = 0) {
         Class.forName("org.sqlite.JDBC")
         DriverManager.getConnection("jdbc:sqlite:$path").use { db ->
@@ -281,6 +312,7 @@ class DesktopDatabaseMigrationTest {
             "saved_record_filter_activities",
             "saved_record_filter_tags",
             "saved_record_filter_categories",
+            "saved_record_filter_days_of_week",
         )
 
         private val EXPECTED_TABLES = setOf(

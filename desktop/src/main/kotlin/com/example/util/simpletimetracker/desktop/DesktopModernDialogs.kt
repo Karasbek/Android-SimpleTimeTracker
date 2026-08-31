@@ -228,6 +228,60 @@ internal fun ModernRecordEditorDialog(
 }
 
 @Composable
+internal fun ModernRunningRecordEditorDialog(
+    record: DesktopTimelineRecord,
+    database: DesktopDatabase,
+    service: DesktopRunningRecordService,
+    activities: List<ActivityRow>,
+    onDismiss: () -> Unit,
+    onSaved: () -> Unit,
+) {
+    var activityId by remember(record.id) { mutableStateOf(record.activityId) }
+    var comment by remember(record.id) { mutableStateOf(record.comment) }
+    var selectedTags by remember(record.id) { mutableStateOf(record.tags.map(DesktopRecordTagView::tagId).toSet()) }
+    val numericValues = remember(record.id) { mutableStateMapOf<Long, String>().apply {
+        record.tags.forEach { tag -> tag.numericValue?.let { put(tag.tagId, formatDesktopTagValue(it)) } }
+    } }
+    val selectableTags = remember(activityId) { database.selectableTagsForActivity(activityId) }
+    var error by remember { mutableStateOf<String?>(null) }
+    DesktopDialogSurface("Изменить запущенную запись", onDismiss, wide = true) {
+        ModernSelector("Активность", activities, activities.first { it.id == activityId }, ActivityRow::id, ActivityRow::name) { activityId = it.id }
+        Text("Начата ${modernDateTimeText(record.startedAt)}; время не меняется для работающего таймера.", style = MaterialTheme.typography.body2, color = DesktopUiTokens.SecondaryText)
+        ModernField("Комментарий", comment, { comment = it }, "Необязательно", singleLine = false)
+        selectableTags.forEach { tag ->
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Checkbox(tag.id in selectedTags, onCheckedChange = { checked ->
+                    selectedTags = selectedTags.toMutableSet().apply { if (checked) add(tag.id) else remove(tag.id) }
+                })
+                Text(tag.name, modifier = Modifier.weight(1f))
+                if (tag.valueType == DesktopTagValueType.NUMERIC && tag.id in selectedTags) {
+                    OutlinedTextField(numericValues[tag.id].orEmpty(), { numericValues[tag.id] = it }, label = { Text(tag.valueSuffix.ifBlank { "Значение" }) }, modifier = Modifier.width(180.dp), singleLine = true)
+                }
+            }
+        }
+        error?.let { ModernFormError(it) }
+        DesktopDialogActions(onDismiss, "Сохранить", {
+            val tags = buildList {
+                selectableTags.filter { it.id in selectedTags }.forEach { tag ->
+                    val value = if (tag.valueType == DesktopTagValueType.NUMERIC) numericValues[tag.id]?.trim()?.toDoubleOrNull() else null
+                    if (tag.valueType == DesktopTagValueType.NUMERIC && value == null) {
+                        error = "Для тега ${tag.name} укажите число"
+                        return@DesktopDialogActions
+                    }
+                    add(DesktopRecordTag(tag.id, value))
+                }
+            }
+            when (service.update(record.activityId, activityId, comment, tags)) {
+                RecordWriteResult.SAVED -> onSaved()
+                RecordWriteResult.ACTIVITY_UNAVAILABLE -> error = "Активность недоступна"
+                RecordWriteResult.INVALID_TAG_VALUE, RecordWriteResult.TAG_UNAVAILABLE -> error = "Некорректные теги"
+                RecordWriteResult.RECORD_MISSING -> error = "Запущенная запись уже остановлена"
+            }
+        })
+    }
+}
+
+@Composable
 internal fun ModernTagsManagerDialog(
     service: DesktopTagCategoryService,
     onDismiss: () -> Unit,
@@ -448,6 +502,17 @@ internal fun ModernFilterEditorDialog(
     var excludeUncategorized by remember { mutableStateOf(initial.excludeUncategorized) }
     var includeUntagged by remember { mutableStateOf(initial.includeUntagged) }
     var excludeUntagged by remember { mutableStateOf(initial.excludeUntagged) }
+    var commentMode by remember { mutableStateOf(initial.commentFilter) }
+    var commentQuery by remember { mutableStateOf(initial.commentQuery) }
+    var minDurationSeconds by remember { mutableStateOf(initial.minDurationMillis?.div(1_000L)?.toString().orEmpty()) }
+    var maxDurationSeconds by remember { mutableStateOf(initial.maxDurationMillis?.div(1_000L)?.toString().orEmpty()) }
+    var timeStart by remember { mutableStateOf(initial.timeOfDayStartMillis?.div(60_000L)?.toString().orEmpty()) }
+    var timeEnd by remember { mutableStateOf(initial.timeOfDayEndMillis?.div(60_000L)?.toString().orEmpty()) }
+    var kinds by remember { mutableStateOf(initial.recordKind) }
+    var multitaskOnly by remember { mutableStateOf(initial.multitaskOnly) }
+    var duplicates by remember { mutableStateOf(initial.duplicates) }
+    var selectedDays by remember { mutableStateOf(initial.daysOfWeek) }
+    var filterError by remember { mutableStateOf<String?>(null) }
     fun result() = DesktopRecordFilter(
         includedActivityIds = includedActivities,
         excludedActivityIds = excludedActivities,
@@ -459,6 +524,16 @@ internal fun ModernFilterEditorDialog(
         excludedTagIds = excludedTags,
         includeUntagged = includeUntagged,
         excludeUntagged = excludeUntagged,
+        commentFilter = commentMode,
+        commentQuery = commentQuery,
+        timeOfDayStartMillis = timeStart.toLongOrNull()?.takeIf { it in 0..1_439 }?.times(60_000L),
+        timeOfDayEndMillis = timeEnd.toLongOrNull()?.takeIf { it in 0..1_439 }?.times(60_000L),
+        minDurationMillis = minDurationSeconds.toLongOrNull()?.takeIf { it >= 0 }?.times(1_000L),
+        maxDurationMillis = maxDurationSeconds.toLongOrNull()?.takeIf { it >= 0 }?.times(1_000L),
+        recordKind = kinds,
+        multitaskOnly = multitaskOnly,
+        duplicates = duplicates,
+        daysOfWeek = selectedDays,
     )
     DesktopDialogSurface("Фильтр записей", onDismiss, wide = true) {
         Text("Включённые условия выбирают подходящие записи; исключения всегда убирают их из результата.", style = MaterialTheme.typography.body2, color = DesktopUiTokens.SecondaryText)
@@ -472,7 +547,57 @@ internal fun ModernFilterEditorDialog(
         ModernCheckGroup("Исключить теги", tags.map { it.id to it.name }, excludedTags) { excludedTags = it }
         ModernBooleanOption("Включить без тегов", includeUntagged) { includeUntagged = it }
         ModernBooleanOption("Исключить без тегов", excludeUntagged) { excludeUntagged = it }
-        DesktopDialogActions(onDismiss, "Применить", { onApply(result()) })
+        ModernSelector("Комментарии", DesktopCommentFilter.entries.toList(), commentMode, { it.name }, {
+            when (it) {
+                DesktopCommentFilter.ANY -> "Любые"
+                DesktopCommentFilter.NO_COMMENT -> "Без комментария"
+                DesktopCommentFilter.HAS_COMMENT -> "С комментарием"
+                DesktopCommentFilter.CONTAINS -> "Содержит текст"
+            }
+        }) { commentMode = it }
+        if (commentMode == DesktopCommentFilter.CONTAINS) ModernField("Текст комментария", commentQuery, { commentQuery = it })
+        ModernField("Мин. длительность, сек.", minDurationSeconds, { minDurationSeconds = it }, "Не задана")
+        ModernField("Макс. длительность, сек.", maxDurationSeconds, { maxDurationSeconds = it }, "Не задана")
+        ModernField("Время от, минут", timeStart, { timeStart = it }, "0")
+        ModernField("Время до, минут", timeEnd, { timeEnd = it }, "1439")
+        Text("Дни недели", style = MaterialTheme.typography.subtitle1)
+        DayOfWeek.entries.chunked(2).forEach { pair ->
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                pair.forEach { day ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(day in selectedDays, onCheckedChange = { checked ->
+                            selectedDays = selectedDays.toMutableSet().apply { if (checked) add(day) else remove(day) }
+                        })
+                        Text(dayOfWeekTitle(day), style = MaterialTheme.typography.body2)
+                    }
+                }
+            }
+        }
+        ModernSelector("Тип записи", DesktopRecordKindFilter.entries.toList(), kinds, { it.name }, {
+            when (it) {
+                DesktopRecordKindFilter.ALL -> "Все"
+                DesktopRecordKindFilter.COMPLETED -> "Завершённые"
+                DesktopRecordKindFilter.RUNNING -> "Запущенные"
+                DesktopRecordKindFilter.UNTRACKED -> "Не отслеживалось"
+            }
+        }) { kinds = it }
+        ModernBooleanOption("Только пересекающиеся таймеры", multitaskOnly) { multitaskOnly = it }
+        ModernSelector("Дубликаты", DesktopDuplicateFilter.entries.toList(), duplicates, { it.name }, {
+            when (it) {
+                DesktopDuplicateFilter.NONE -> "Не фильтровать"
+                DesktopDuplicateFilter.SAME_TIMES -> "Совпадающие времена"
+                DesktopDuplicateFilter.SAME_ACTIVITY -> "Одна активность"
+            }
+        }) { duplicates = it }
+        filterError?.let { ModernFormError(it) }
+        DesktopDialogActions(onDismiss, "Применить", {
+            if ((timeStart.isNotBlank() && timeStart.toLongOrNull()?.let { it !in 0..1_439 } != false) ||
+                (timeEnd.isNotBlank() && timeEnd.toLongOrNull()?.let { it !in 0..1_439 } != false) ||
+                minDurationSeconds.toLongOrNull()?.let { it < 0 } == true ||
+                maxDurationSeconds.toLongOrNull()?.let { it < 0 } == true
+            ) filterError = "Время: 0–1439 минут; длительность — неотрицательное число"
+            else onApply(result())
+        })
     }
 }
 
@@ -583,7 +708,7 @@ private fun ModernSavedFilterEditorDialog(
         ModernBooleanOption("Исключить без тегов", excludeUntagged) { excludeUntagged = it }
         error?.let { ModernFormError(it) }
         DesktopDialogActions(onDismiss, "Сохранить", {
-            val filter = DesktopRecordFilter(
+            val filter = existing.filter.copy(
                 includedActivityIds = includedActivities,
                 excludedActivityIds = excludedActivities,
                 includedCategoryIds = includedCategories,
@@ -615,22 +740,29 @@ internal fun ModernTimeSettingsDialog(
     var shiftMinutes by remember { mutableStateOf((preferences.startOfDayShiftMillis / 60_000L).toString()) }
     var firstDay by remember { mutableStateOf(preferences.firstDayOfWeek) }
     var ignoreShortSeconds by remember { mutableStateOf(quickActions.ignoreShortRecordsDurationSeconds.toString()) }
+    var untrackedCutoffSeconds by remember { mutableStateOf(preferences.ignoreShortUntrackedDurationSeconds.toString()) }
+    var showUntracked by remember { mutableStateOf(preferences.showUntrackedInRecords) }
     var error by remember { mutableStateOf<String?>(null) }
     DesktopDialogSurface("Время и недели", onDismiss) {
         Text("Эти настройки изменяют границы пользовательских дней и недель во всей истории и статистике.", style = MaterialTheme.typography.body2, color = DesktopUiTokens.SecondaryText)
         ModernField("Начало дня, минут от полуночи", shiftMinutes, { shiftMinutes = it }, "0")
         ModernSelector("Первый день недели", DayOfWeek.entries.toList(), firstDay, { it.value }, { dayOfWeekTitle(it) }) { firstDay = it }
         ModernField("Игнорировать записи короче, сек.", ignoreShortSeconds, { ignoreShortSeconds = it }, "0 — сохранять все")
+        ModernBooleanOption("Показывать неотслеживаемое время", showUntracked) { showUntracked = it }
+        ModernField("Игнорировать неотслеживаемые интервалы короче, сек.", untrackedCutoffSeconds, { untrackedCutoffSeconds = it }, "60")
         error?.let { ModernFormError(it) }
         DesktopDialogActions(onDismiss, "Сохранить", {
             val minutes = shiftMinutes.toLongOrNull()
             val seconds = ignoreShortSeconds.toLongOrNull()
-            if (minutes == null || minutes !in -1439L..1439L || seconds == null || seconds < 0) {
+            val untrackedSeconds = untrackedCutoffSeconds.toLongOrNull()
+            if (minutes == null || minutes !in -1439L..1439L || seconds == null || seconds < 0 || untrackedSeconds == null || untrackedSeconds < 0) {
                 error = "Укажите начало дня от −1439 до 1439 минут и неотрицательный порог"
             } else {
                 preferences.startOfDayShiftMillis = minutes * 60_000L
                 preferences.firstDayOfWeek = firstDay
                 quickActions.setIgnoreShortRecordsDurationSeconds(seconds)
+                preferences.ignoreShortUntrackedDurationSeconds = untrackedSeconds
+                preferences.showUntrackedInRecords = showUntracked
                 onSaved()
             }
         })

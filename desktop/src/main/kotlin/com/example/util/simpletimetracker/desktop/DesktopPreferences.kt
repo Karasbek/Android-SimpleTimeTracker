@@ -14,6 +14,9 @@ interface DesktopSemanticPreferences {
     var ignoreShortRecordsDurationSeconds: Long
     var startOfDayShiftMillis: Long
     var firstDayOfWeek: DayOfWeek
+    /** Android's `ignoreShortUntrackedDuration`, in seconds; 0 disables the cutoff. */
+    var ignoreShortUntrackedDurationSeconds: Long
+    var showUntrackedInRecords: Boolean
 }
 
 class FileDesktopSemanticPreferences(
@@ -45,6 +48,20 @@ class FileDesktopSemanticPreferences(
     override var firstDayOfWeek: DayOfWeek
         @Synchronized get() = loadDayOfWeek(FIRST_DAY_OF_WEEK, DEFAULT_FIRST_DAY_OF_WEEK)
         @Synchronized set(value) = update(FIRST_DAY_OF_WEEK, value.name)
+
+    override var ignoreShortUntrackedDurationSeconds: Long
+        @Synchronized get() = loadLong(
+            IGNORE_SHORT_UNTRACKED_DURATION_SECONDS,
+            DEFAULT_IGNORE_SHORT_UNTRACKED_DURATION_SECONDS,
+        )
+        @Synchronized set(value) = update(
+            IGNORE_SHORT_UNTRACKED_DURATION_SECONDS,
+            value.coerceAtLeast(0).toString(),
+        )
+
+    override var showUntrackedInRecords: Boolean
+        @Synchronized get() = loadBoolean(SHOW_UNTRACKED_IN_RECORDS, DEFAULT_SHOW_UNTRACKED_IN_RECORDS)
+        @Synchronized set(value) = update(SHOW_UNTRACKED_IN_RECORDS, value.toString())
 
     private fun loadBoolean(key: String, default: Boolean): Boolean {
         val value = load().getProperty(key)?.trim()?.lowercase()
@@ -104,10 +121,15 @@ class FileDesktopSemanticPreferences(
         const val MAX_START_OF_DAY_SHIFT_MILLIS = 24 * 60 * 60 * 1000L - 60 * 1000L
         val DEFAULT_FIRST_DAY_OF_WEEK: DayOfWeek =
             DayOfWeek.of(((Calendar.getInstance().firstDayOfWeek + 5) % 7) + 1)
+        // PrefsRepoImpl: 60 seconds, while 0 explicitly disables filtering.
+        const val DEFAULT_IGNORE_SHORT_UNTRACKED_DURATION_SECONDS = 60L
+        const val DEFAULT_SHOW_UNTRACKED_IN_RECORDS = false
         private const val ALLOW_MULTITASKING = "allowMultitasking"
         private const val IGNORE_SHORT_RECORDS_DURATION_SECONDS = "ignoreShortRecordsDurationSeconds"
         private const val START_OF_DAY_SHIFT_MILLIS = "startOfDayShiftMillis"
         private const val FIRST_DAY_OF_WEEK = "firstDayOfWeek"
+        private const val IGNORE_SHORT_UNTRACKED_DURATION_SECONDS = "ignoreShortUntrackedDurationSeconds"
+        private const val SHOW_UNTRACKED_IN_RECORDS = "showUntrackedInRecords"
     }
 }
 

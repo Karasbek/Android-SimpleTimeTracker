@@ -361,6 +361,104 @@ class DesktopDatabase(
         }
     }
 
+    /** Updates a running record atomically; moving it keeps its start, comment and tag values. */
+    fun updateRunningRecord(
+        currentActivityId: Long,
+        targetActivityId: Long,
+        comment: String,
+        tags: List<DesktopRecordTag>,
+    ): Boolean = connection().use { db ->
+        db.autoCommit = false
+        try {
+            val running = db.prepareStatement(
+                "SELECT time_started, tag_id FROM runningRecords WHERE id = ?",
+            ).use { query ->
+                query.setLong(1, currentActivityId)
+                query.executeQuery().use { result ->
+                    if (result.next()) result.getLong("time_started") to result.getLong("tag_id") else null
+                }
+            } ?: run { db.rollback(); return false }
+            val targetAvailable = db.prepareStatement(
+                "SELECT COUNT(*) FROM recordTypes WHERE id = ? AND hidden = 0",
+            ).use { query ->
+                query.setLong(1, targetActivityId)
+                query.executeQuery().use { result -> result.next() && result.getInt(1) == 1 }
+            }
+            val targetAlreadyRunning = targetActivityId != currentActivityId && db.prepareStatement(
+                "SELECT COUNT(*) FROM runningRecords WHERE id = ?",
+            ).use { query ->
+                query.setLong(1, targetActivityId)
+                query.executeQuery().use { result -> result.next() && result.getInt(1) != 0 }
+            }
+            if (!targetAvailable || targetAlreadyRunning) { db.rollback(); return false }
+            if (targetActivityId == currentActivityId) {
+                db.prepareStatement("UPDATE runningRecords SET comment = ? WHERE id = ?").use { update ->
+                    update.setString(1, comment)
+                    update.setLong(2, currentActivityId)
+                    update.executeUpdate()
+                }
+                replaceRunningRecordTags(db, currentActivityId, tags)
+            } else {
+                db.prepareStatement("DELETE FROM running_record_to_tag WHERE running_record_id = ?").use { delete ->
+                    delete.setLong(1, currentActivityId)
+                    delete.executeUpdate()
+                }
+                db.prepareStatement("DELETE FROM runningRecords WHERE id = ?").use { delete ->
+                    delete.setLong(1, currentActivityId)
+                    delete.executeUpdate()
+                }
+                db.prepareStatement("INSERT INTO runningRecords(id, time_started, comment, tag_id) VALUES (?, ?, ?, ?)").use { insert ->
+                    insert.setLong(1, targetActivityId)
+                    insert.setLong(2, running.first)
+                    insert.setString(3, comment)
+                    insert.setLong(4, running.second)
+                    insert.executeUpdate()
+                }
+                replaceRunningRecordTags(db, targetActivityId, tags)
+            }
+            db.commit()
+            true
+        } catch (error: Throwable) {
+            db.rollback()
+            throw error
+        }
+    }
+
+    fun splitCompletedRecord(recordId: Long, splitAt: Long, afterActivityId: Long): Boolean = connection().use { db ->
+        db.autoCommit = false
+        try {
+            val record = db.prepareStatement(
+                "SELECT type_id, time_started, time_ended, comment, tag_id FROM records WHERE id = ?",
+            ).use { query ->
+                query.setLong(1, recordId)
+                query.executeQuery().use { result ->
+                    if (result.next()) listOf(result.getLong(1), result.getLong(2), result.getLong(3), result.getString(4), result.getLong(5)) else null
+                }
+            } ?: run { db.rollback(); return false }
+            val started = record[1] as Long
+            val ended = record[2] as Long
+            if (splitAt <= started || splitAt >= ended) { db.rollback(); return false }
+            val available = db.prepareStatement("SELECT COUNT(*) FROM recordTypes WHERE id = ? AND hidden = 0").use { query ->
+                query.setLong(1, afterActivityId)
+                query.executeQuery().use { result -> result.next() && result.getInt(1) == 1 }
+            }
+            if (!available) { db.rollback(); return false }
+            val tags = recordTags(db, recordId, activeOnly = false)
+            db.prepareStatement("UPDATE records SET time_ended = ? WHERE id = ?").use { update ->
+                update.setLong(1, splitAt)
+                update.setLong(2, recordId)
+                update.executeUpdate()
+            }
+            val newId = insertCompletedRecord(db, afterActivityId, splitAt, ended, record[3] as String, record[4] as Long)
+            replaceRecordTags(db, newId, tags)
+            db.commit()
+            true
+        } catch (error: Throwable) {
+            db.rollback()
+            throw error
+        }
+    }
+
     override fun completeRunningRecord(activityId: Long, endedAt: Long): Boolean {
         connection().use { db ->
             db.autoCommit = false

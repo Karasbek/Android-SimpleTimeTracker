@@ -75,6 +75,8 @@ internal class MemoryPreferences(
     override var ignoreShortRecordsDurationSeconds: Long = 0,
     override var startOfDayShiftMillis: Long = 0,
     override var firstDayOfWeek: java.time.DayOfWeek = java.time.DayOfWeek.MONDAY,
+    override var ignoreShortUntrackedDurationSeconds: Long = 60,
+    override var showUntrackedInRecords: Boolean = false,
 ) : DesktopSemanticPreferences
 
 internal fun clock(vararg timestamps: Long): () -> Long {

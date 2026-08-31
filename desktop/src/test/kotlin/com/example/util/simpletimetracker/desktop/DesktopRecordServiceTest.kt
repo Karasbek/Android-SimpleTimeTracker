@@ -180,6 +180,24 @@ class DesktopRecordServiceTest {
         )
     }
 
+    @Test
+    fun splitCreatesTwoRecordsAndPreservesCommentAndTags() {
+        val database = temporaryDatabase()
+        database.addActivity("Before")
+        database.addActivity("After")
+        val ids = database.activities().associateBy(ActivityRow::name)
+        val tag = DesktopTagCategoryService(database)
+            .saveTag(draft = DesktopTagDraft("Focus", DesktopTagValueType.NONE, "")).second!!
+        val records = DesktopRecordService(database)
+        assertEquals(RecordWriteResult.SAVED, records.create(DesktopRecordDraft(ids.getValue("Before").id, 100, 300, "note", listOf(DesktopRecordTag(tag, null)))))
+        val original = storedRecords(database).single().id
+
+        assertEquals(RecordWriteResult.SAVED, DesktopRecordActionsService(database).split(original, 200, ids.getValue("After").id))
+        assertEquals(listOf(100L to 200L, 200L to 300L), storedRecords(database).map { it.startedAt to it.endedAt })
+        assertEquals("note", storedRecords(database)[1].comment)
+        assertEquals(listOf("Focus"), database.recordTagViews(storedRecords(database)[1].id).map(DesktopRecordTagView::name))
+    }
+
     private fun temporaryDatabase(): DesktopDatabase = DesktopDatabase(
         Files.createTempDirectory("desktop-record-service-test").resolve("tracker.sqlite3"),
     )

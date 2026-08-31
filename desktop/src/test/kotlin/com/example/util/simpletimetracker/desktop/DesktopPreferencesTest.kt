@@ -82,4 +82,19 @@ class DesktopPreferencesTest {
             FileDesktopSemanticPreferences(file).startOfDayShiftMillis,
         )
     }
+
+    @Test
+    fun untrackedPreferencesUseAndroidDefaultsAndPersist() {
+        val file = Files.createTempDirectory("desktop-preferences-test").resolve("preferences")
+        val first = FileDesktopSemanticPreferences(file)
+
+        assertEquals(60L, first.ignoreShortUntrackedDurationSeconds)
+        assertFalse(first.showUntrackedInRecords)
+        first.ignoreShortUntrackedDurationSeconds = 90
+        first.showUntrackedInRecords = true
+
+        val reopened = FileDesktopSemanticPreferences(file)
+        assertEquals(90L, reopened.ignoreShortUntrackedDurationSeconds)
+        assertTrue(reopened.showUntrackedInRecords)
+    }
 }

@@ -6,6 +6,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -112,12 +114,18 @@ fun DesktopModernApp(
 ) {
     var selectedTab by remember { mutableStateOf(DesktopModernTab.TRACKER) }
     var selectedDate by remember { mutableStateOf(timeService.userDate()) }
+    var historyCustomRange by remember { mutableStateOf<DesktopTimeRange?>(null) }
+    var historyAllRecords by remember { mutableStateOf(false) }
+    var calendarOpen by remember { mutableStateOf(false) }
+    var customRangeOpen by remember { mutableStateOf(false) }
     var rangeLength by remember { mutableStateOf(DesktopRangeLength.DAY) }
     var activeFilter by remember { mutableStateOf(DesktopRecordFilter.EMPTY) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var activityEditor by remember { mutableStateOf<ActivityRow?>(null) }
     var createActivity by remember { mutableStateOf(false) }
     var recordEditor by remember { mutableStateOf<DesktopTimelineRecord?>(null) }
+    var runningRecordEditor by remember { mutableStateOf<DesktopTimelineRecord?>(null) }
+    var splitRecordEditor by remember { mutableStateOf<DesktopTimelineRecord?>(null) }
     var createManualRecord by remember { mutableStateOf(false) }
     var tagManagerOpen by remember { mutableStateOf(false) }
     var categoryManagerOpen by remember { mutableStateOf(false) }
@@ -137,22 +145,30 @@ fun DesktopModernApp(
     val activities = remember(revision) { database.activities() }
     val archived = remember(revision) { database.archivedActivities() }
     val todayRange = remember(revision, today) { timeService.day(today) }
-    val historyRange = remember(revision, selectedDate) { timeService.day(selectedDate) }
+    val historyRange = remember(revision, selectedDate, historyCustomRange, historyAllRecords) {
+        when {
+            historyAllRecords -> DesktopTimeRange(0, Long.MAX_VALUE)
+            historyCustomRange != null -> historyCustomRange!!
+            else -> timeService.day(selectedDate)
+        }
+    }
     val statisticsRange = remember(revision, selectedDate, rangeLength) {
         timeService.range(rangeLength, selectedDate)
     }
     val trackerRecords = remember(revision, today, now) { recordsRangeService.get(todayRange) }
-    val historyRecords = remember(revision, selectedDate, activeFilter, now) {
-        recordsRangeService.get(historyRange, activeFilter)
+    val historyRecords = remember(revision, selectedDate, activeFilter, now, historyCustomRange, historyAllRecords, semanticPreferences.showUntrackedInRecords) {
+        recordsRangeService.get(historyRange, activeFilter, semanticPreferences.showUntrackedInRecords || activeFilter.recordKind == DesktopRecordKindFilter.UNTRACKED)
     }
     val statisticsRecords = remember(revision, selectedDate, rangeLength, activeFilter, now) {
-        recordsRangeService.get(statisticsRange, activeFilter)
+        recordsRangeService.get(statisticsRange, activeFilter, activeFilter.recordKind == DesktopRecordKindFilter.UNTRACKED)
     }
 
     SimpleTimeTrackerDesktopTheme {
         Row(modifier = Modifier.fillMaxSize().background(DesktopUiTokens.Background)) {
             DesktopSidebar(selectedTab = selectedTab, onSelect = { selectedTab = it })
-            Box(modifier = Modifier.fillMaxSize()) {
+            // The sidebar is fixed; the content must be measured from the remaining
+            // width, not from the Row's whole max width.
+            Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
                 when (selectedTab) {
                     DesktopModernTab.TRACKER -> ModernTrackerPage(
                         database = database,
@@ -175,6 +191,7 @@ fun DesktopModernApp(
                         database = database,
                         recordService = recordService,
                         tagCategoryService = tagCategoryService,
+                        quickActions = quickActions,
                         activities = activities,
                         records = historyRecords,
                         range = historyRange,
@@ -182,12 +199,19 @@ fun DesktopModernApp(
                         today = today,
                         filter = activeFilter,
                         onDateChange = { selectedDate = it },
+                        onOpenCalendar = { calendarOpen = true },
+                        onOpenCustomRange = { customRangeOpen = true },
+                        allRecords = historyAllRecords,
+                        onAllRecordsChange = { enabled -> historyAllRecords = enabled; if (enabled) historyCustomRange = null },
                         onOpenFilters = { filterEditorOpen = true },
                         onOpenSavedFilters = { savedFiltersOpen = true },
                         onSaveFilter = { saveFilterOpen = true },
                         onClearFilter = { activeFilter = DesktopRecordFilter.EMPTY },
+                        onFilterChange = { activeFilter = it },
                         onCreateManual = { createManualRecord = true },
                         onEditRecord = { recordEditor = it },
+                        onEditRunningRecord = { runningRecordEditor = it },
+                        onSplitRecord = { splitRecordEditor = it },
                         onChanged = onDataChanged,
                     )
 
@@ -238,6 +262,25 @@ fun DesktopModernApp(
                 onSaved = { createManualRecord = false; recordEditor = null; onDataChanged() },
             )
         }
+        runningRecordEditor?.let { record ->
+            ModernRunningRecordEditorDialog(
+                record = record,
+                database = database,
+                service = remember { DesktopRunningRecordService(database) },
+                activities = activities,
+                onDismiss = { runningRecordEditor = null },
+                onSaved = { runningRecordEditor = null; onDataChanged() },
+            )
+        }
+        splitRecordEditor?.let { record ->
+            ModernSplitRecordDialog(
+                record = record,
+                activities = activities,
+                service = remember { DesktopRecordActionsService(database) },
+                onDismiss = { splitRecordEditor = null },
+                onSaved = { splitRecordEditor = null; onDataChanged() },
+            )
+        }
         if (tagManagerOpen) {
             ModernTagsManagerDialog(tagCategoryService, onDismiss = { tagManagerOpen = false }, onChanged = onDataChanged)
         }
@@ -277,6 +320,20 @@ fun DesktopModernApp(
                 quickActions = quickActions,
                 onDismiss = { timeSettingsOpen = false },
                 onSaved = { timeSettingsOpen = false; onDataChanged() },
+            )
+        }
+        if (calendarOpen) {
+            ModernCalendarDialog(
+                selected = selectedDate,
+                onDismiss = { calendarOpen = false },
+                onSelected = { selectedDate = it; historyAllRecords = false; historyCustomRange = null; calendarOpen = false },
+            )
+        }
+        if (customRangeOpen) {
+            ModernCustomRangeDialog(
+                initial = historyCustomRange,
+                onDismiss = { customRangeOpen = false },
+                onApply = { historyCustomRange = it; historyAllRecords = false; customRangeOpen = false },
             )
         }
     }
@@ -462,10 +519,12 @@ private fun ModernActivityCard(
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun ModernHistoryPage(
     database: DesktopDatabase,
     recordService: DesktopRecordService,
     tagCategoryService: DesktopTagCategoryService,
+    quickActions: DesktopQuickActions,
     activities: List<ActivityRow>,
     records: List<DesktopTimelineRecord>,
     range: DesktopTimeRange,
@@ -473,32 +532,58 @@ private fun ModernHistoryPage(
     today: LocalDate,
     filter: DesktopRecordFilter,
     onDateChange: (LocalDate) -> Unit,
+    onOpenCalendar: () -> Unit,
+    onOpenCustomRange: () -> Unit,
+    allRecords: Boolean,
+    onAllRecordsChange: (Boolean) -> Unit,
     onOpenFilters: () -> Unit,
     onOpenSavedFilters: () -> Unit,
     onSaveFilter: () -> Unit,
     onClearFilter: () -> Unit,
+    onFilterChange: (DesktopRecordFilter) -> Unit,
     onCreateManual: () -> Unit,
     onEditRecord: (DesktopTimelineRecord) -> Unit,
+    onEditRunningRecord: (DesktopTimelineRecord) -> Unit,
+    onSplitRecord: (DesktopTimelineRecord) -> Unit,
     onChanged: () -> Unit,
 ) {
+    var selectedRecordIds by remember(date, range, filter) { mutableStateOf(emptySet<Long>()) }
     Column(modifier = Modifier.fillMaxSize().padding(DesktopUiTokens.ScreenPadding)) {
-        DesktopPageHeader(
-            title = "Записи",
-            subtitle = "${date.format(DateTimeFormatter.ofPattern("d MMMM yyyy"))} · ${durationText(records.sumOf { range.clippedDuration(it.startedAt, it.endedAt) })}",
-            actions = {
+        // Keep the heading independent from the action toolbar. Previously both
+        // competed in one Row and the toolbar could reduce the heading to one letter.
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Записи", style = MaterialTheme.typography.h4, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "${date.format(DateTimeFormatter.ofPattern("d MMMM yyyy"))} · ${durationText(records.sumOf { range.clippedDuration(it.startedAt, it.endedAt) })}",
+                    style = MaterialTheme.typography.body2,
+                    color = DesktopUiTokens.SecondaryText,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OutlinedButton(onClick = { onDateChange(date.minusDays(1)) }) { Text("←") }
-                Spacer(Modifier.width(6.dp))
                 TextButton(onClick = { onDateChange(today) }, enabled = date != today) { Text("Сегодня") }
-                Spacer(Modifier.width(6.dp))
                 OutlinedButton(onClick = { onDateChange(date.plusDays(1)) }, enabled = date < today) { Text("→") }
-                Spacer(Modifier.width(14.dp))
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+                OutlinedButton(onClick = onOpenCalendar) { Text("Календарь") }
+                OutlinedButton(onClick = onOpenCustomRange) { Text("Диапазон") }
+                OutlinedButton(onClick = { onAllRecordsChange(!allRecords) }) {
+                    Text(if (allRecords) "По дням" else "Все записи")
+                }
                 OutlinedButton(onClick = onOpenFilters) { Text("Фильтр") }
-                Spacer(Modifier.width(6.dp))
                 TextButton(onClick = onOpenSavedFilters) { Text("Сохранённые") }
-                Spacer(Modifier.width(6.dp))
                 Button(onClick = onCreateManual) { Text("+ Запись") }
-            },
-        )
+        }
         if (filter != DesktopRecordFilter.EMPTY) {
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -506,6 +591,26 @@ private fun ModernHistoryPage(
                 Spacer(Modifier.width(8.dp))
                 TextButton(onClick = onClearFilter) { Text("Сбросить") }
                 TextButton(onClick = onSaveFilter) { Text("Сохранить как…") }
+            }
+        }
+        if (selectedRecordIds.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                DesktopTagChip("Выбрано: ${selectedRecordIds.size}")
+                TextButton(onClick = { selectedRecordIds = emptySet() }) { Text("Снять выбор") }
+                TextButton(onClick = {
+                    onFilterChange(filter.copy(manuallyExcludedRecordIds = filter.manuallyExcludedRecordIds + selectedRecordIds))
+                    selectedRecordIds = emptySet()
+                }) { Text("Скрыть выбранные") }
+                TextButton(onClick = {
+                    selectedRecordIds.forEach { recordService.delete(it) }
+                    selectedRecordIds = emptySet()
+                    onChanged()
+                }) { Text("Удалить выбранные") }
             }
         }
         Spacer(Modifier.height(DesktopUiTokens.SectionGap))
@@ -517,9 +622,23 @@ private fun ModernHistoryPage(
                     ModernRecordCard(
                         record = record,
                         duration = range.clippedDuration(record.startedAt, record.endedAt),
-                        onEdit = { onEditRecord(record) },
+                        onEdit = { if (!record.isUntracked) onEditRecord(record) },
+                        onEditRunning = { onEditRunningRecord(record) },
+                        selected = record.id in selectedRecordIds,
+                        onSelectionChange = { selected ->
+                            if (!record.isRunning && !record.isUntracked) {
+                                selectedRecordIds = selectedRecordIds.toMutableSet().apply {
+                                    if (selected) add(record.id) else remove(record.id)
+                                }
+                            }
+                        },
+                        onDuplicate = {
+                            if (recordService.create(DesktopRecordDraft(record.activityId, record.startedAt, record.endedAt, record.comment, record.tags.map { DesktopRecordTag(it.tagId, it.numericValue) })) == RecordWriteResult.SAVED) onChanged()
+                        },
+                        onSplit = { onSplitRecord(record) },
+                        onContinue = { quickActions.repeatRecord(record); onChanged() },
                         onDelete = {
-                            if (recordService.delete(record.id) == RecordWriteResult.SAVED) onChanged()
+                            if (!record.isUntracked && recordService.delete(record.id) == RecordWriteResult.SAVED) onChanged()
                         },
                     )
                 }
@@ -533,17 +652,31 @@ private fun ModernRecordCard(
     record: DesktopTimelineRecord,
     duration: Long,
     onEdit: () -> Unit,
+    onEditRunning: () -> Unit,
+    selected: Boolean,
+    onSelectionChange: (Boolean) -> Unit,
+    onDuplicate: () -> Unit,
+    onSplit: () -> Unit,
+    onContinue: () -> Unit,
     onDelete: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     Card(
         modifier = Modifier.fillMaxWidth(),
-        backgroundColor = if (record.isRunning) DesktopUiTokens.Running else identityColor(record.colorInt, DesktopUiTokens.Active),
+        backgroundColor = when {
+            record.isUntracked -> DesktopUiTokens.Divider
+            record.isRunning -> DesktopUiTokens.Running
+            else -> identityColor(record.colorInt, DesktopUiTokens.Active)
+        },
         contentColor = Color.White,
         elevation = if (record.isRunning) 5.dp else 1.dp,
         shape = MaterialTheme.shapes.medium,
     ) {
         Row(modifier = Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (!record.isRunning && !record.isUntracked) {
+                Checkbox(selected, onCheckedChange = onSelectionChange)
+                Spacer(Modifier.width(6.dp))
+            }
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Text(listOf(record.icon, record.activityName).filter(String::isNotBlank).joinToString(" "), style = MaterialTheme.typography.h6)
                 Text(
@@ -567,11 +700,16 @@ private fun ModernRecordCard(
             }
             Column(horizontalAlignment = Alignment.End) {
                 Text(durationText(duration), style = MaterialTheme.typography.h6)
-                if (!record.isRunning) {
+                if (record.isRunning) {
+                    TextButton(onClick = onEditRunning) { Text("Изменить", color = Color.White) }
+                } else if (!record.isUntracked) {
                     Box {
                         TextButton(onClick = { menuOpen = true }) { Text("⋮", color = Color.White, style = MaterialTheme.typography.h5) }
                         DropdownMenu(menuOpen, onDismissRequest = { menuOpen = false }) {
                             DropdownMenuItem(onClick = { menuOpen = false; onEdit() }) { Text("Изменить") }
+                            DropdownMenuItem(onClick = { menuOpen = false; onDuplicate() }) { Text("Дублировать") }
+                            DropdownMenuItem(onClick = { menuOpen = false; onSplit() }) { Text("Разделить") }
+                            DropdownMenuItem(onClick = { menuOpen = false; onContinue() }) { Text("Продолжить") }
                             DropdownMenuItem(onClick = { menuOpen = false; onDelete() }) { Text("Удалить") }
                         }
                     }

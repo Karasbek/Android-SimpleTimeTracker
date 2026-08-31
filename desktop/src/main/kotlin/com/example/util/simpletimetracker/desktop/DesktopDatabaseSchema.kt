@@ -3,7 +3,7 @@ package com.example.util.simpletimetracker.desktop
 import java.sql.Connection
 
 internal object DesktopDatabaseSchema {
-    const val CURRENT_VERSION = 7
+    const val CURRENT_VERSION = 8
     private const val LEGACY_VERSION = 1
 
     fun initialize(connection: Connection) {
@@ -40,6 +40,7 @@ internal object DesktopDatabaseSchema {
                 4 -> migrate4To5(connection)
                 5 -> migrate5To6(connection)
                 6 -> migrate6To7(connection)
+                7 -> migrate7To8(connection)
                 else -> error("Missing desktop database migration from version $version")
             }
             version++
@@ -91,6 +92,45 @@ internal object DesktopDatabaseSchema {
             if (!hasColumn(connection, "categories", "color")) statement.execute("ALTER TABLE categories ADD COLUMN color INTEGER NOT NULL DEFAULT 0")
             if (!hasColumn(connection, "categories", "color_int")) statement.execute("ALTER TABLE categories ADD COLUMN color_int TEXT NOT NULL DEFAULT ''")
             if (!hasColumn(connection, "categories", "note")) statement.execute("ALTER TABLE categories ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+        }
+    }
+
+    /**
+     * v8 keeps saved-filter entity selections normalized and adds only scalar
+     * RecordsFilter properties. Existing v6 filters remain exact empty/default
+     * instances of these new criteria.
+     */
+    private fun migrate7To8(connection: Connection) {
+        connection.createStatement().use { statement ->
+            listOf(
+                "comment_mode TEXT NOT NULL DEFAULT 'ANY'",
+                "comment_query TEXT NOT NULL DEFAULT ''",
+                "date_started INTEGER",
+                "date_ended INTEGER",
+                "time_of_day_start INTEGER",
+                "time_of_day_end INTEGER",
+                "duration_min INTEGER",
+                "duration_max INTEGER",
+                "show_untracked INTEGER NOT NULL DEFAULT 0 CHECK (show_untracked IN (0, 1))",
+                "multitask_only INTEGER NOT NULL DEFAULT 0 CHECK (multitask_only IN (0, 1))",
+                "duplicates_mode TEXT NOT NULL DEFAULT 'NONE'",
+                "record_kind TEXT NOT NULL DEFAULT 'ALL'",
+            ).forEach { definition ->
+                val column = definition.substringBefore(' ')
+                if (!hasColumn(connection, "saved_record_filters", column)) {
+                    statement.execute("ALTER TABLE saved_record_filters ADD COLUMN $definition")
+                }
+            }
+            statement.execute(
+                """
+                CREATE TABLE IF NOT EXISTS saved_record_filter_days_of_week (
+                    filter_id INTEGER NOT NULL,
+                    day_of_week INTEGER NOT NULL CHECK (day_of_week BETWEEN 1 AND 7),
+                    PRIMARY KEY (filter_id, day_of_week),
+                    FOREIGN KEY (filter_id) REFERENCES saved_record_filters(id) ON DELETE RESTRICT
+                )
+                """.trimIndent(),
+            )
         }
     }
 
@@ -153,6 +193,7 @@ internal object DesktopDatabaseSchema {
         }
         createTagCategoryTables(connection)
         createSavedFilterTables(connection)
+        createAdvancedSavedFilterTables(connection)
     }
 
     private fun createIndexes(connection: Connection) {
@@ -279,7 +320,19 @@ internal object DesktopDatabaseSchema {
                     include_uncategorized INTEGER NOT NULL DEFAULT 0 CHECK (include_uncategorized IN (0, 1)),
                     exclude_uncategorized INTEGER NOT NULL DEFAULT 0 CHECK (exclude_uncategorized IN (0, 1)),
                     include_untagged INTEGER NOT NULL DEFAULT 0 CHECK (include_untagged IN (0, 1)),
-                    exclude_untagged INTEGER NOT NULL DEFAULT 0 CHECK (exclude_untagged IN (0, 1))
+                    exclude_untagged INTEGER NOT NULL DEFAULT 0 CHECK (exclude_untagged IN (0, 1)),
+                    comment_mode TEXT NOT NULL DEFAULT 'ANY',
+                    comment_query TEXT NOT NULL DEFAULT '',
+                    date_started INTEGER,
+                    date_ended INTEGER,
+                    time_of_day_start INTEGER,
+                    time_of_day_end INTEGER,
+                    duration_min INTEGER,
+                    duration_max INTEGER,
+                    show_untracked INTEGER NOT NULL DEFAULT 0 CHECK (show_untracked IN (0, 1)),
+                    multitask_only INTEGER NOT NULL DEFAULT 0 CHECK (multitask_only IN (0, 1)),
+                    duplicates_mode TEXT NOT NULL DEFAULT 'NONE',
+                    record_kind TEXT NOT NULL DEFAULT 'ALL'
                 )
                 """.trimIndent(),
             )
@@ -296,6 +349,21 @@ internal object DesktopDatabaseSchema {
                     """.trimIndent(),
                 )
             }
+        }
+    }
+
+    private fun createAdvancedSavedFilterTables(connection: Connection) {
+        connection.createStatement().use { statement ->
+            statement.execute(
+                """
+                CREATE TABLE IF NOT EXISTS saved_record_filter_days_of_week (
+                    filter_id INTEGER NOT NULL,
+                    day_of_week INTEGER NOT NULL CHECK (day_of_week BETWEEN 1 AND 7),
+                    PRIMARY KEY (filter_id, day_of_week),
+                    FOREIGN KEY (filter_id) REFERENCES saved_record_filters(id) ON DELETE RESTRICT
+                )
+                """.trimIndent(),
+            )
         }
     }
 

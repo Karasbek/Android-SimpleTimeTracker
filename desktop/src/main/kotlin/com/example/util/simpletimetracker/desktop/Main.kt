@@ -440,7 +440,7 @@ fun main() = application {
     val tagCategoryService = remember { DesktopTagCategoryService(database) }
     val activityEditorService = remember { DesktopActivityEditorService(database) }
     val timeService = remember { DesktopTimeService(semanticPreferences) }
-    val recordsRangeService = remember { DesktopRecordsRangeService(database) }
+    val recordsRangeService = remember { DesktopRecordsRangeService(database, semanticPreferences) }
     val savedFilterService = remember { DesktopSavedFilterService(database) }
     val quickActions = remember {
         DesktopQuickActions(database, timerService, DesktopPinnedActivitiesStore())
