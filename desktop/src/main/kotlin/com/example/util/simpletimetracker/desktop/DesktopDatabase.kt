@@ -23,21 +23,24 @@ data class HistoryRow(
     val endedAt: Long,
 )
 
-class DesktopDatabase {
+class DesktopDatabase(
+    databasePath: Path? = null,
+    private val currentTimeMillis: () -> Long = System::currentTimeMillis,
+) : DesktopTimerRepository {
 
     val path: Path
 
     init {
         Class.forName("org.sqlite.JDBC")
 
-        val dataHome = System.getenv("XDG_DATA_HOME")
-            ?.takeIf { it.isNotBlank() }
-            ?.let(Paths::get)
-            ?: Paths.get(System.getProperty("user.home"), ".local", "share")
-
-        val directory = dataHome.resolve("simple-time-tracker")
-        Files.createDirectories(directory)
-        path = directory.resolve("tracker.sqlite3")
+        path = databasePath ?: run {
+            val dataHome = System.getenv("XDG_DATA_HOME")
+                ?.takeIf { it.isNotBlank() }
+                ?.let(Paths::get)
+                ?: Paths.get(System.getProperty("user.home"), ".local", "share")
+            dataHome.resolve("simple-time-tracker").resolve("tracker.sqlite3")
+        }
+        Files.createDirectories(path.parent)
 
         connection().use { db ->
             db.createStatement().use { statement ->
@@ -178,7 +181,7 @@ class DesktopDatabase {
         }
     }
 
-    fun activities(): List<ActivityRow> {
+    override fun activities(): List<ActivityRow> {
         return connection().use { db ->
             db.prepareStatement(
                 """
@@ -211,7 +214,7 @@ class DesktopDatabase {
         }
     }
 
-    fun toggle(activityId: Long) {
+    override fun toggle(activityId: Long) {
         connection().use { db ->
             db.autoCommit = false
             try {
@@ -229,14 +232,14 @@ class DesktopDatabase {
                         "INSERT INTO runningRecords(id, time_started, comment, tag_id) VALUES(?, ?, ?, ?)",
                     ).use { insert ->
                         insert.setLong(1, activityId)
-                        insert.setLong(2, System.currentTimeMillis())
+                        insert.setLong(2, currentTimeMillis())
                         insert.setString(3, "")
                         insert.setLong(4, 0)
                         insert.executeUpdate()
                     }
                 } else {
                     val recordId = nextId(db)
-                    val endedAt = System.currentTimeMillis()
+                    val endedAt = currentTimeMillis()
 
                     db.prepareStatement(
                         """
@@ -266,6 +269,25 @@ class DesktopDatabase {
             } catch (e: Throwable) {
                 db.rollback()
                 throw e
+            }
+        }
+    }
+
+    override fun previousCompletedActivityId(): Long? {
+        return connection().use { db ->
+            db.prepareStatement(
+                """
+                SELECT r.type_id
+                FROM records r
+                JOIN recordTypes rt ON rt.id = r.type_id
+                WHERE rt.hidden = 0 AND rt.instantDuration = 0
+                ORDER BY r.time_ended DESC, r.id DESC
+                LIMIT 1
+                """.trimIndent(),
+            ).use { query ->
+                query.executeQuery().use { result ->
+                    if (result.next()) result.getLong(1) else null
+                }
             }
         }
     }

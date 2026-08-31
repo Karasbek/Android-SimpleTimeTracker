@@ -280,6 +280,7 @@ private fun DayNavigation(
 @Composable
 private fun TrackerV2(
     database: DesktopDatabase,
+    quickActions: DesktopQuickActions,
     activities: List<ActivityRow>,
     todayRecords: List<DayRecordRow>,
     today: LocalDate,
@@ -531,10 +532,9 @@ private fun TrackerV2(
                         ) {
                             Button(
                                 onClick = {
-                                    database.toggle(
+                                    quickActions.toggle(
                                         activity.id,
                                     )
-                                    onChanged()
                                 },
                             ) {
                                 Text(
@@ -616,6 +616,24 @@ private fun TrackerV2(
                             ) {
                                 Text("Архив")
                             }
+
+                        }
+
+                        TextButton(
+                            onClick = {
+                                val pinned = quickActions.state.pinned.any {
+                                    it.id == activity.id
+                                }
+                                quickActions.setPinned(activity.id, !pinned)
+                            },
+                        ) {
+                            Text(
+                                if (quickActions.state.pinned.any { it.id == activity.id }) {
+                                    "Убрать из tray"
+                                } else {
+                                    "Закрепить в tray"
+                                },
+                            )
                         }
                     }
                 }
@@ -1022,12 +1040,11 @@ private fun ArchiveV2(
 @Composable
 fun DesktopAppV2(
     database: DesktopDatabase,
+    quickActions: DesktopQuickActions,
+    revision: Int,
+    onDataChanged: () -> Unit,
 ) {
     var selectedTab by remember {
-        mutableIntStateOf(0)
-    }
-
-    var revision by remember {
         mutableIntStateOf(0)
     }
 
@@ -1158,6 +1175,8 @@ fun DesktopAppV2(
                             TrackerV2(
                                 database =
                                     database,
+                                quickActions =
+                                    quickActions,
                                 activities =
                                     activities,
                                 todayRecords =
@@ -1167,7 +1186,7 @@ fun DesktopAppV2(
                                 now =
                                     now,
                                 onChanged = {
-                                    revision++
+                                    onDataChanged()
                                 },
                             )
 
@@ -1189,7 +1208,7 @@ fun DesktopAppV2(
                                         it
                                 },
                                 onChanged = {
-                                    revision++
+                                    onDataChanged()
                                 },
                             )
 
@@ -1218,7 +1237,7 @@ fun DesktopAppV2(
                                 activities =
                                     archived,
                                 onChanged = {
-                                    revision++
+                                    onDataChanged()
                                 },
                             )
                     }
@@ -1227,4 +1246,3 @@ fun DesktopAppV2(
         }
     }
 }
-

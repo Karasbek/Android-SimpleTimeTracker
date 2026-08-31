@@ -44,6 +44,8 @@ import kotlinx.coroutines.delay
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.awt.EventQueue
+import java.util.concurrent.Executors
 
 private enum class MainTab(val title: String) {
     TRACKER("Трекер"),
@@ -422,21 +424,62 @@ fun DesktopApp(database: DesktopDatabase) {
 
 fun main() = application {
     val database = remember { DesktopDatabase() }
+    val quickActions = remember {
+        DesktopQuickActions(database, DesktopPinnedActivitiesStore())
+    }
+    val trayActionsExecutor = remember {
+        Executors.newSingleThreadExecutor { task ->
+            Thread(task, "desktop-tray-actions").apply { isDaemon = true }
+        }
+    }
     var isWindowVisible by remember { mutableStateOf(true) }
+    var revision by remember { mutableIntStateOf(0) }
     var tray by remember { mutableStateOf<DesktopTray?>(null) }
 
     DisposableEffect(Unit) {
+        fun runQuickAction(action: () -> Unit) {
+            trayActionsExecutor.execute {
+                try {
+                    action()
+                } catch (error: Throwable) {
+                    System.err.println("Tray action failed: ${error.message}")
+                    error.printStackTrace(System.err)
+                }
+            }
+        }
+
         tray = DesktopTray.create(
+            initialState = quickActions.state,
+            onToggle = { activityId ->
+                runQuickAction { quickActions.toggle(activityId) }
+            },
+            onRepeatPrevious = {
+                runQuickAction {
+                    when (quickActions.repeatPrevious()) {
+                        RepeatPreviousResult.STARTED -> Unit
+                        RepeatPreviousResult.NO_PREVIOUS ->
+                            System.err.println("No previous activity to repeat")
+                        RepeatPreviousResult.ALREADY_RUNNING ->
+                            System.err.println("Previous activity is already running")
+                    }
+                }
+            },
             onOpen = { isWindowVisible = true },
             onExit = {
                 tray?.shutdown()
                 exitApplication()
             },
         )
+        val subscription = quickActions.addListener { state ->
+            tray?.update(state)
+            EventQueue.invokeLater { revision++ }
+        }
 
         onDispose {
+            subscription.close()
             tray?.shutdown()
             tray = null
+            trayActionsExecutor.shutdown()
         }
     }
 
@@ -455,6 +498,11 @@ fun main() = application {
             height = 720.dp,
         ),
     ) {
-        DesktopAppV2(database)
+        DesktopAppV2(
+            database = database,
+            quickActions = quickActions,
+            revision = revision,
+            onDataChanged = quickActions::refresh,
+        )
     }
 }

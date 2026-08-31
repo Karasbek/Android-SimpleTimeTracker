@@ -13,6 +13,7 @@ dependencies {
     implementation("org.xerial:sqlite-jdbc:3.46.1.0")
     implementation("org.slf4j:slf4j-nop:1.7.36")
     implementation("com.dorkbox:SystemTray:4.4")
+    testImplementation(kotlin("test"))
 }
 
 kotlin {

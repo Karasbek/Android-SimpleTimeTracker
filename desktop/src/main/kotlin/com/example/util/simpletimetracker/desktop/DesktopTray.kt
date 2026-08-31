@@ -1,6 +1,7 @@
 package com.example.util.simpletimetracker.desktop
 
 import dorkbox.systemTray.MenuItem
+import dorkbox.systemTray.Menu
 import dorkbox.systemTray.Separator
 import dorkbox.systemTray.SystemTray
 import java.awt.BasicStroke
@@ -16,8 +17,28 @@ import javax.imageio.ImageIO
 
 class DesktopTray private constructor(
     private val tray: SystemTray,
+    private val onToggle: (Long) -> Unit,
+    private val onRepeatPrevious: () -> Unit,
+    private val onOpen: () -> Unit,
+    private val onExit: () -> Unit,
 ) {
     private val shutdown = AtomicBoolean(false)
+    private val runningMenu = Menu("Запущенные")
+    private val pinnedMenu = Menu("Закреплённые")
+    private val runningItems = mutableMapOf<Long, MenuItem>()
+    private val pinnedItems = mutableMapOf<Long, MenuItem>()
+    private val repeatItem = actionItem("Повторить предыдущую", onRepeatPrevious)
+
+    init {
+        tray.menu.add(runningMenu)
+        tray.menu.add(pinnedMenu)
+        tray.menu.add(Separator())
+        tray.menu.add(repeatItem)
+        tray.menu.add(Separator())
+        tray.menu.add(actionItem("Открыть", onOpen))
+        tray.menu.add(Separator())
+        tray.menu.add(actionItem("Выход", onExit))
+    }
 
     fun shutdown() {
         if (shutdown.compareAndSet(false, true)) {
@@ -25,8 +46,55 @@ class DesktopTray private constructor(
         }
     }
 
+    fun update(state: DesktopTrayState) {
+        if (shutdown.get()) return
+        EventQueue.invokeLater {
+            if (!shutdown.get()) updateMenu(state)
+        }
+    }
+
+    private fun updateMenu(state: DesktopTrayState) {
+        syncItems(runningMenu, runningItems, state.running, ::runningLabel)
+        syncItems(pinnedMenu, pinnedItems, state.pinned) { activity ->
+            val marker = if (activity.startedAt == null) "▶" else "■"
+            "$marker ${activity.name}"
+        }
+        runningMenu.enabled = state.running.isNotEmpty()
+        pinnedMenu.enabled = state.pinned.isNotEmpty()
+        repeatItem.enabled = state.canRepeatPrevious
+    }
+
+    private fun actionItem(text: String, action: () -> Unit): MenuItem =
+        MenuItem(text, ActionListener { action() })
+
+    private fun syncItems(
+        menu: Menu,
+        current: MutableMap<Long, MenuItem>,
+        activities: List<TrayActivity>,
+        label: (TrayActivity) -> String,
+    ) {
+        val actualIds = activities.mapTo(mutableSetOf(), TrayActivity::id)
+        current.keys.filterNot(actualIds::contains).forEach { id ->
+            current.remove(id)?.remove()
+        }
+        activities.forEach { activity ->
+            val text = label(activity)
+            val item = current[activity.id]
+            if (item == null) {
+                current[activity.id] = menu.add(
+                    actionItem(text) { onToggle(activity.id) },
+                )
+            } else if (item.text != text) {
+                item.text = text
+            }
+        }
+    }
+
     companion object {
         fun create(
+            initialState: DesktopTrayState,
+            onToggle: (Long) -> Unit,
+            onRepeatPrevious: () -> Unit,
             onOpen: () -> Unit,
             onExit: () -> Unit,
         ): DesktopTray? {
@@ -39,29 +107,14 @@ class DesktopTray private constructor(
             return try {
                 tray = SystemTray.get("SimpleTimeTracker") ?: return null
                 tray.menu.setImage(createTrayIcon())
-                tray.setStatus("Simple Time Tracker")
 
-                tray.menu.add(
-                    MenuItem(
-                        "Открыть",
-                        ActionListener {
-                            EventQueue.invokeLater(onOpen)
-                        },
-                    ),
-                )
-
-                tray.menu.add(Separator())
-
-                tray.menu.add(
-                    MenuItem(
-                        "Выход",
-                        ActionListener {
-                            EventQueue.invokeLater(onExit)
-                        },
-                    ),
-                )
-
-                DesktopTray(tray)
+                DesktopTray(
+                    tray = tray,
+                    onToggle = onToggle,
+                    onRepeatPrevious = onRepeatPrevious,
+                    onOpen = { EventQueue.invokeLater(onOpen) },
+                    onExit = { EventQueue.invokeLater(onExit) },
+                ).also { it.updateMenu(initialState) }
             } catch (error: Throwable) {
                 System.err.println("Tray initialization failed: ${error.message}")
                 tray?.shutdown()
@@ -69,6 +122,14 @@ class DesktopTray private constructor(
             }
         }
     }
+}
+
+private fun runningLabel(activity: TrayActivity): String {
+    val started = java.time.Instant.ofEpochMilli(activity.startedAt ?: 0L)
+        .atZone(java.time.ZoneId.systemDefault())
+        .toLocalTime()
+        .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
+    return "■ ${activity.name} — с $started"
 }
 
 private fun createTrayIcon(): java.io.File {
