@@ -73,6 +73,8 @@ class DesktopDatabaseQuickActionsTest {
 internal class MemoryPreferences(
     override var allowMultitasking: Boolean,
     override var ignoreShortRecordsDurationSeconds: Long = 0,
+    override var startOfDayShiftMillis: Long = 0,
+    override var firstDayOfWeek: java.time.DayOfWeek = java.time.DayOfWeek.MONDAY,
 ) : DesktopSemanticPreferences
 
 internal fun clock(vararg timestamps: Long): () -> Long {

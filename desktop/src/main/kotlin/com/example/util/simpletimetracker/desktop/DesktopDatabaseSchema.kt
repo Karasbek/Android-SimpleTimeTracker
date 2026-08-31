@@ -3,7 +3,7 @@ package com.example.util.simpletimetracker.desktop
 import java.sql.Connection
 
 internal object DesktopDatabaseSchema {
-    const val CURRENT_VERSION = 5
+    const val CURRENT_VERSION = 6
     private const val LEGACY_VERSION = 1
 
     fun initialize(connection: Connection) {
@@ -38,6 +38,7 @@ internal object DesktopDatabaseSchema {
                 2 -> migrate2To3(connection)
                 3 -> migrate3To4(connection)
                 4 -> migrate4To5(connection)
+                5 -> migrate5To6(connection)
                 else -> error("Missing desktop database migration from version $version")
             }
             version++
@@ -77,6 +78,11 @@ internal object DesktopDatabaseSchema {
     private fun migrate4To5(connection: Connection) {
         createTagCategoryTables(connection)
         createTagCategoryIndexes(connection)
+    }
+
+    private fun migrate5To6(connection: Connection) {
+        createSavedFilterTables(connection)
+        createSavedFilterIndexes(connection)
     }
 
     private fun createTables(connection: Connection) {
@@ -130,11 +136,13 @@ internal object DesktopDatabaseSchema {
             )
         }
         createTagCategoryTables(connection)
+        createSavedFilterTables(connection)
     }
 
     private fun createIndexes(connection: Connection) {
         createCoreIndexes(connection)
         createTagCategoryIndexes(connection)
+        createSavedFilterIndexes(connection)
     }
 
     private fun createCoreIndexes(connection: Connection) {
@@ -239,6 +247,47 @@ internal object DesktopDatabaseSchema {
             statement.execute("CREATE INDEX IF NOT EXISTS index_record_type_to_tag_tag ON record_type_to_tag(tag_id)")
             statement.execute("CREATE INDEX IF NOT EXISTS index_record_type_to_default_tag_tag ON record_type_to_default_tag(tag_id)")
             statement.execute("CREATE INDEX IF NOT EXISTS index_record_type_category_category ON record_type_category(category_id)")
+        }
+    }
+
+    private fun createSavedFilterTables(connection: Connection) {
+        connection.createStatement().use { statement ->
+            statement.execute(
+                """
+                CREATE TABLE IF NOT EXISTS saved_record_filters (
+                    id INTEGER PRIMARY KEY NOT NULL,
+                    name TEXT NOT NULL,
+                    include_uncategorized INTEGER NOT NULL DEFAULT 0 CHECK (include_uncategorized IN (0, 1)),
+                    exclude_uncategorized INTEGER NOT NULL DEFAULT 0 CHECK (exclude_uncategorized IN (0, 1)),
+                    include_untagged INTEGER NOT NULL DEFAULT 0 CHECK (include_untagged IN (0, 1)),
+                    exclude_untagged INTEGER NOT NULL DEFAULT 0 CHECK (exclude_untagged IN (0, 1))
+                )
+                """.trimIndent(),
+            )
+            listOf("activities", "tags", "categories").forEach { kind ->
+                statement.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS saved_record_filter_$kind (
+                        filter_id INTEGER NOT NULL,
+                        entity_id INTEGER NOT NULL,
+                        mode TEXT NOT NULL CHECK (mode IN ('INCLUDE', 'EXCLUDE')),
+                        PRIMARY KEY (filter_id, entity_id, mode),
+                        FOREIGN KEY (filter_id) REFERENCES saved_record_filters(id) ON DELETE RESTRICT
+                    )
+                    """.trimIndent(),
+                )
+            }
+        }
+    }
+
+    private fun createSavedFilterIndexes(connection: Connection) {
+        connection.createStatement().use { statement ->
+            listOf("activities", "tags", "categories").forEach { kind ->
+                statement.execute(
+                    "CREATE INDEX IF NOT EXISTS index_saved_record_filter_${kind}_entity " +
+                        "ON saved_record_filter_$kind(entity_id)",
+                )
+            }
         }
     }
 

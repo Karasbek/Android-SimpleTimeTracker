@@ -115,42 +115,6 @@ private fun parseDateTime(
         .toEpochMilli()
 }
 
-private fun uiDayBounds(
-    date: LocalDate,
-): Pair<Long, Long> {
-    val zone = ZoneId.systemDefault()
-
-    val start =
-        date.atStartOfDay(zone)
-            .toInstant()
-            .toEpochMilli()
-
-    val end =
-        date.plusDays(1)
-            .atStartOfDay(zone)
-            .toInstant()
-            .toEpochMilli()
-
-    return start to end
-}
-
-private fun overlap(
-    startedAt: Long,
-    endedAt: Long,
-    date: LocalDate,
-): Long {
-    val bounds = uiDayBounds(date)
-
-    val start =
-        maxOf(startedAt, bounds.first)
-
-    val end =
-        minOf(endedAt, bounds.second)
-
-    return (end - start)
-        .coerceAtLeast(0)
-}
-
 private data class RecordEditResult(
     val activityId: Long,
     val startedAt: Long,
@@ -160,7 +124,7 @@ private data class RecordEditResult(
 )
 
 private fun editRecordDialog(
-    record: DayRecordRow,
+    record: DesktopTimelineRecord,
     activities: List<ActivityRow>,
     database: DesktopDatabase,
 ): RecordEditResult? {
@@ -288,9 +252,11 @@ private fun TrackerV2(
     database: DesktopDatabase,
     activityEditorService: DesktopActivityEditorService,
     tagCategoryService: DesktopTagCategoryService,
+    semanticPreferences: DesktopSemanticPreferences,
     quickActions: DesktopQuickActions,
     activities: List<ActivityRow>,
-    todayRecords: List<DayRecordRow>,
+    todayRecords: List<DesktopTimelineRecord>,
+    todayRange: DesktopTimeRange,
     today: LocalDate,
     now: Long,
     onChanged: () -> Unit,
@@ -299,39 +265,22 @@ private fun TrackerV2(
         mutableStateOf("")
     }
 
-    val bounds = uiDayBounds(today)
+    val completedTodayRecords = todayRecords.filterNot(DesktopTimelineRecord::isRunning)
 
     val finishedByActivity =
-        todayRecords
+        completedTodayRecords
             .groupBy { it.activityId }
             .mapValues { entry ->
                 entry.value.sumOf {
-                    overlap(
-                        it.startedAt,
-                        it.endedAt,
-                        today,
-                    )
+                    todayRange.clippedDuration(it.startedAt, it.endedAt)
                 }
             }
 
-    val runningTotal =
-        activities.sumOf { activity ->
-            activity.startedAt?.let {
-                now - maxOf(
-                    it,
-                    bounds.first,
-                )
-            } ?: 0L
-        }
+    val runningTotal = todayRecords.filter(DesktopTimelineRecord::isRunning)
+        .sumOf { todayRange.clippedDuration(it.startedAt, it.endedAt) }
 
     val finishedTotal =
-        todayRecords.sumOf {
-            overlap(
-                it.startedAt,
-                it.endedAt,
-                today,
-            )
-        }
+        completedTodayRecords.sumOf { todayRange.clippedDuration(it.startedAt, it.endedAt) }
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -388,6 +337,14 @@ private fun TrackerV2(
                     fontWeight = FontWeight.Bold,
                 )
             }
+        }
+
+        TextButton(
+            onClick = {
+                if (editDesktopTimeSettingsDialog(semanticPreferences)) onChanged()
+            },
+        ) {
+            Text("Время и недели")
         }
 
         Spacer(Modifier.height(18.dp))
@@ -512,9 +469,9 @@ private fun TrackerV2(
             ) { activity ->
                 val running =
                     activity.startedAt?.let {
-                        now - maxOf(
+                        todayRange.clippedDuration(
                             it,
-                            bounds.first,
+                            now,
                         )
                     } ?: 0L
 
@@ -716,24 +673,91 @@ private fun TrackerV2(
 }
 
 @Composable
+private fun TimeFilterControls(
+    database: DesktopDatabase,
+    tagCategoryService: DesktopTagCategoryService,
+    savedFilterService: DesktopSavedFilterService,
+    filter: DesktopRecordFilter,
+    onFilterChanged: (DesktopRecordFilter) -> Unit,
+    onDataChanged: () -> Unit,
+) {
+    val allActivities = database.activities() + database.archivedActivities()
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        TextButton(
+            onClick = {
+                editDesktopRecordFilterDialog(
+                    initial = filter,
+                    activities = allActivities,
+                    tags = tagCategoryService.tags(),
+                    categories = tagCategoryService.categories(),
+                )?.let(onFilterChanged)
+            },
+        ) { Text("Фильтр") }
+        TextButton(onClick = { onFilterChanged(DesktopRecordFilter.EMPTY) }) { Text("Сбросить") }
+        TextButton(
+            onClick = {
+                askDesktopSavedFilterName()?.let { name ->
+                    when (savedFilterService.save(name = name, filter = filter).first) {
+                        DesktopSavedFilterResult.SAVED -> onDataChanged()
+                        DesktopSavedFilterResult.INVALID_NAME -> JOptionPane.showMessageDialog(null, "Укажите название")
+                        DesktopSavedFilterResult.NAME_CONFLICT -> JOptionPane.showMessageDialog(null, "Такое название уже есть")
+                        DesktopSavedFilterResult.NOT_FOUND -> Unit
+                    }
+                }
+            },
+        ) { Text("Сохранить") }
+        TextButton(
+            onClick = {
+                chooseDesktopSavedFilterDialog(savedFilterService.all())?.let { saved ->
+                    when (JOptionPane.showOptionDialog(
+                        null,
+                        saved.name,
+                        "Сохранённый фильтр",
+                        JOptionPane.DEFAULT_OPTION,
+                        JOptionPane.PLAIN_MESSAGE,
+                        null,
+                        arrayOf("Применить", "Изменить", "Удалить", "Отмена"),
+                        "Применить",
+                    )) {
+                        0 -> onFilterChanged(saved.filter)
+                        1 -> editDesktopRecordFilterDialog(
+                            saved.filter,
+                            allActivities,
+                            tagCategoryService.tags(),
+                            tagCategoryService.categories(),
+                        )?.let { edited ->
+                            askDesktopSavedFilterName(saved.name)?.let { name ->
+                                if (savedFilterService.save(saved.id, name, edited).first == DesktopSavedFilterResult.SAVED) {
+                                    onFilterChanged(edited)
+                                    onDataChanged()
+                                }
+                            }
+                        }
+                        2 -> if (savedFilterService.delete(saved.id) == DesktopSavedFilterResult.SAVED) onDataChanged()
+                    }
+                }
+            },
+        ) { Text("Сохранённые") }
+    }
+}
+
+@Composable
 private fun HistoryV2(
     database: DesktopDatabase,
     recordService: DesktopRecordService,
+    tagCategoryService: DesktopTagCategoryService,
+    savedFilterService: DesktopSavedFilterService,
     activities: List<ActivityRow>,
-    records: List<DayRecordRow>,
+    records: List<DesktopTimelineRecord>,
+    range: DesktopTimeRange,
+    filter: DesktopRecordFilter,
     date: LocalDate,
     today: LocalDate,
     onDateChanged: (LocalDate) -> Unit,
+    onFilterChanged: (DesktopRecordFilter) -> Unit,
     onChanged: () -> Unit,
 ) {
-    val total =
-        records.sumOf {
-            overlap(
-                it.startedAt,
-                it.endedAt,
-                date,
-            )
-        }
+    val total = records.sumOf { range.clippedDuration(it.startedAt, it.endedAt) }
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -746,6 +770,17 @@ private fun HistoryV2(
         )
 
         Spacer(Modifier.height(14.dp))
+
+        TimeFilterControls(
+            database = database,
+            tagCategoryService = tagCategoryService,
+            savedFilterService = savedFilterService,
+            filter = filter,
+            onFilterChanged = onFilterChanged,
+            onDataChanged = onChanged,
+        )
+
+        Spacer(Modifier.height(8.dp))
 
         ManualRecordButton(
             database = database,
@@ -805,7 +840,11 @@ private fun HistoryV2(
                                 )
 
                                 Text(
-                                    "${dateTimeText(record.startedAt)} — ${dateTimeText(record.endedAt)}",
+                                    if (record.isRunning) {
+                                        "${dateTimeText(record.startedAt)} — запущено"
+                                    } else {
+                                        "${dateTimeText(record.startedAt)} — ${dateTimeText(record.endedAt)}"
+                                    },
                                     style =
                                         MaterialTheme.typography.caption,
                                 )
@@ -842,11 +881,7 @@ private fun HistoryV2(
 
                             Text(
                                 durationText(
-                                    overlap(
-                                        record.startedAt,
-                                        record.endedAt,
-                                        date,
-                                    ),
+                                    range.clippedDuration(record.startedAt, record.endedAt),
                                 ),
                                 fontWeight =
                                     FontWeight.Bold,
@@ -856,7 +891,7 @@ private fun HistoryV2(
                                 Modifier.width(6.dp),
                             )
 
-                            TextButton(
+                            if (!record.isRunning) TextButton(
                                 onClick = {
                                     val edited =
                                         editRecordDialog(
@@ -894,7 +929,7 @@ private fun HistoryV2(
                                 Text("Изм.")
                             }
 
-                            TextButton(
+                            if (!record.isRunning) TextButton(
                                 onClick = {
                                     val answer =
                                         JOptionPane
@@ -933,12 +968,19 @@ private fun HistoryV2(
 
 @Composable
 private fun StatisticsV2(
-    activities: List<ActivityRow>,
-    records: List<DayRecordRow>,
+    database: DesktopDatabase,
+    tagCategoryService: DesktopTagCategoryService,
+    savedFilterService: DesktopSavedFilterService,
+    records: List<DesktopTimelineRecord>,
+    range: DesktopTimeRange,
+    rangeLength: DesktopRangeLength,
+    onRangeLengthChanged: (DesktopRangeLength) -> Unit,
+    filter: DesktopRecordFilter,
     date: LocalDate,
     today: LocalDate,
-    now: Long,
     onDateChanged: (LocalDate) -> Unit,
+    onFilterChanged: (DesktopRecordFilter) -> Unit,
+    onDataChanged: () -> Unit,
 ) {
     val totals =
         linkedMapOf<Long, Pair<String, Long>>()
@@ -951,39 +993,8 @@ private fun StatisticsV2(
         totals[record.activityId] =
             record.activityName to (
                 old +
-                    overlap(
-                        record.startedAt,
-                        record.endedAt,
-                        date,
-                    )
+                    range.clippedDuration(record.startedAt, record.endedAt)
                 )
-    }
-
-    if (date == today) {
-        val bounds =
-            uiDayBounds(today)
-
-        activities.forEach { activity ->
-            val startedAt =
-                activity.startedAt
-                    ?: return@forEach
-
-            val old =
-                totals[activity.id]
-                    ?.second ?: 0L
-
-            totals[activity.id] =
-                activity.name to (
-                    old +
-                        (
-                            now -
-                                maxOf(
-                                    startedAt,
-                                    bounds.first,
-                                )
-                            ).coerceAtLeast(0)
-                    )
-        }
     }
 
     val rows =
@@ -1009,6 +1020,30 @@ private fun StatisticsV2(
         )
 
         Spacer(Modifier.height(14.dp))
+
+        Row {
+            DesktopRangeLength.entries.forEach { length ->
+                TextButton(onClick = { onRangeLengthChanged(length) }) {
+                    val title = when (length) {
+                        DesktopRangeLength.DAY -> "День"
+                        DesktopRangeLength.WEEK -> "Неделя"
+                        DesktopRangeLength.MONTH -> "Месяц"
+                    }
+                    Text(if (length == rangeLength) "[$title]" else title)
+                }
+            }
+        }
+
+        TimeFilterControls(
+            database = database,
+            tagCategoryService = tagCategoryService,
+            savedFilterService = savedFilterService,
+            filter = filter,
+            onFilterChanged = onFilterChanged,
+            onDataChanged = onDataChanged,
+        )
+
+        Spacer(Modifier.height(8.dp))
 
         Text(
             "Статистика",
@@ -1152,6 +1187,10 @@ fun DesktopAppV2(
     recordService: DesktopRecordService,
     activityEditorService: DesktopActivityEditorService,
     tagCategoryService: DesktopTagCategoryService,
+    semanticPreferences: DesktopSemanticPreferences,
+    timeService: DesktopTimeService,
+    recordsRangeService: DesktopRecordsRangeService,
+    savedFilterService: DesktopSavedFilterService,
     quickActions: DesktopQuickActions,
     revision: Int,
     onDataChanged: () -> Unit,
@@ -1168,9 +1207,12 @@ fun DesktopAppV2(
 
     var selectedDate by remember {
         mutableStateOf(
-            LocalDate.now(),
+            timeService.userDate(),
         )
     }
+
+    var activeFilter by remember { mutableStateOf(DesktopRecordFilter.EMPTY) }
+    var statisticsRangeLength by remember { mutableStateOf(DesktopRangeLength.DAY) }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -1179,7 +1221,7 @@ fun DesktopAppV2(
         }
     }
 
-    val today = LocalDate.now()
+    val today = timeService.userDate(now)
 
     val activities =
         remember(revision) {
@@ -1191,24 +1233,40 @@ fun DesktopAppV2(
             database.archivedActivities()
         }
 
+    val todayRange = remember(revision, today) { timeService.day(today) }
+    val selectedHistoryRange = remember(revision, selectedDate) { timeService.day(selectedDate) }
+    val selectedStatisticsRange = remember(revision, selectedDate, statisticsRangeLength) {
+        timeService.range(statisticsRangeLength, selectedDate)
+    }
+
     val todayRecords =
         remember(
             revision,
             today,
+            now,
         ) {
-            database.historyForDate(
-                today,
-            )
+            recordsRangeService.get(todayRange)
         }
 
-    val selectedRecords =
+    val selectedHistoryRecords =
         remember(
             revision,
             selectedDate,
+            activeFilter,
+            now,
         ) {
-            database.historyForDate(
-                selectedDate,
-            )
+            recordsRangeService.get(selectedHistoryRange, activeFilter)
+        }
+
+    val selectedStatisticsRecords =
+        remember(
+            revision,
+            selectedDate,
+            statisticsRangeLength,
+            activeFilter,
+            now,
+        ) {
+            recordsRangeService.get(selectedStatisticsRange, activeFilter)
         }
 
     MaterialTheme {
@@ -1289,12 +1347,14 @@ fun DesktopAppV2(
                                     database,
                                 activityEditorService = activityEditorService,
                                 tagCategoryService = tagCategoryService,
+                                semanticPreferences = semanticPreferences,
                                 quickActions =
                                     quickActions,
                                 activities =
                                     activities,
                                 todayRecords =
                                     todayRecords,
+                                todayRange = todayRange,
                                 today =
                                     today,
                                 now =
@@ -1309,10 +1369,14 @@ fun DesktopAppV2(
                             HistoryV2(
                                 database = database,
                                 recordService = recordService,
+                                tagCategoryService = tagCategoryService,
+                                savedFilterService = savedFilterService,
                                 activities =
                                     activities,
                                 records =
-                                    selectedRecords,
+                                    selectedHistoryRecords,
+                                range = selectedHistoryRange,
+                                filter = activeFilter,
                                 date =
                                     selectedDate,
                                 today =
@@ -1321,6 +1385,7 @@ fun DesktopAppV2(
                                     selectedDate =
                                         it
                                 },
+                                onFilterChanged = { activeFilter = it },
                                 onChanged = {
                                     onDataChanged()
                                 },
@@ -1328,20 +1393,25 @@ fun DesktopAppV2(
 
                         DesktopTab.STATISTICS ->
                             StatisticsV2(
-                                activities =
-                                    activities,
+                                database = database,
+                                tagCategoryService = tagCategoryService,
+                                savedFilterService = savedFilterService,
                                 records =
-                                    selectedRecords,
+                                    selectedStatisticsRecords,
+                                range = selectedStatisticsRange,
+                                rangeLength = statisticsRangeLength,
+                                onRangeLengthChanged = { statisticsRangeLength = it },
+                                filter = activeFilter,
                                 date =
                                     selectedDate,
                                 today =
                                     today,
-                                now =
-                                    now,
                                 onDateChanged = {
                                     selectedDate =
                                         it
                                 },
+                                onFilterChanged = { activeFilter = it },
+                                onDataChanged = { onDataChanged() },
                             )
 
                         DesktopTab.ARCHIVE ->

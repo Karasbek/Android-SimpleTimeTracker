@@ -131,6 +131,49 @@ class DesktopDatabaseMigrationTest {
         assertTrue(reopened.tags().isEmpty())
     }
 
+    @Test
+    fun version5MigratesToVersion6WithoutChangingExistingProductData() {
+        val path = temporaryPath()
+        val database = DesktopDatabase(path)
+        database.addActivity("Work")
+        val activity = database.activities().single()
+        val taxonomy = DesktopTagCategoryService(database)
+        val tag = taxonomy.saveTag(draft = DesktopTagDraft("Focus", DesktopTagValueType.NONE, "")).second!!
+        val category = taxonomy.saveCategory(draft = DesktopCategoryDraft("Office")).second!!
+        DesktopActivityEditorService(database).update(
+            activity.id,
+            DesktopActivityDetailsDraft(activity.name, 0, setOf(category), emptySet(), emptySet()),
+        )
+        assertEquals(
+            RecordWriteResult.SAVED,
+            DesktopRecordService(database).create(
+                DesktopRecordDraft(activity.id, 100, 200, "kept", listOf(DesktopRecordTag(tag, null))),
+            ),
+        )
+        database.addRunningRecord(DesktopRunningRecord(activity.id, 250, "running", 0))
+
+        connection(path) { db ->
+            db.createStatement().use { statement ->
+                listOf("activities", "tags", "categories").forEach { kind ->
+                    statement.execute("DROP TABLE saved_record_filter_$kind")
+                }
+                statement.execute("DROP TABLE saved_record_filters")
+                statement.execute("PRAGMA user_version = 5")
+            }
+        }
+
+        val migrated = DesktopDatabase(path)
+
+        assertEquals(DesktopDatabaseSchema.CURRENT_VERSION, userVersion(path))
+        assertEquals(listOf("Work"), migrated.activities().map(ActivityRow::name))
+        assertEquals(1, migrated.runningRecords().size)
+        assertEquals("kept", migrated.historyForDate(java.time.LocalDate.of(1970, 1, 1)).single().comment)
+        assertEquals(listOf("Focus"), migrated.recordTagViews(migrated.historyForDate(java.time.LocalDate.of(1970, 1, 1)).single().id).map(DesktopRecordTagView::name))
+        assertEquals(setOf(category), migrated.categoryIdsForActivity(activity.id))
+        assertTrue(tableNames(path).containsAll(SAVED_FILTER_TABLES))
+        assertTrue(DesktopDatabase(path).savedRecordFilters().isEmpty())
+    }
+
     private fun createLegacyDatabase(path: Path, version: Int, instantDuration: Long = 0) {
         Class.forName("org.sqlite.JDBC")
         DriverManager.getConnection("jdbc:sqlite:$path").use { db ->
@@ -233,11 +276,18 @@ class DesktopDatabaseMigrationTest {
             "record_type_category",
         )
 
+        private val SAVED_FILTER_TABLES = setOf(
+            "saved_record_filters",
+            "saved_record_filter_activities",
+            "saved_record_filter_tags",
+            "saved_record_filter_categories",
+        )
+
         private val EXPECTED_TABLES = setOf(
             "recordTypes",
             "runningRecords",
             "records",
             "desktop_id_allocator",
-        ) + TAG_CATEGORY_TABLES
+        ) + TAG_CATEGORY_TABLES + SAVED_FILTER_TABLES
     }
 }

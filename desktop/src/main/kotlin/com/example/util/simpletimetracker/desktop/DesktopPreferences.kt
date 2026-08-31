@@ -6,10 +6,14 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
 import java.util.Properties
+import java.time.DayOfWeek
+import java.util.Calendar
 
 interface DesktopSemanticPreferences {
     var allowMultitasking: Boolean
     var ignoreShortRecordsDurationSeconds: Long
+    var startOfDayShiftMillis: Long
+    var firstDayOfWeek: DayOfWeek
 }
 
 class FileDesktopSemanticPreferences(
@@ -30,6 +34,18 @@ class FileDesktopSemanticPreferences(
             value.coerceAtLeast(0).toString(),
         )
 
+    override var startOfDayShiftMillis: Long
+        @Synchronized get() = loadSignedLong(START_OF_DAY_SHIFT_MILLIS, DEFAULT_START_OF_DAY_SHIFT_MILLIS)
+            .coerceIn(-MAX_START_OF_DAY_SHIFT_MILLIS, MAX_START_OF_DAY_SHIFT_MILLIS)
+        @Synchronized set(value) = update(
+            START_OF_DAY_SHIFT_MILLIS,
+            value.coerceIn(-MAX_START_OF_DAY_SHIFT_MILLIS, MAX_START_OF_DAY_SHIFT_MILLIS).toString(),
+        )
+
+    override var firstDayOfWeek: DayOfWeek
+        @Synchronized get() = loadDayOfWeek(FIRST_DAY_OF_WEEK, DEFAULT_FIRST_DAY_OF_WEEK)
+        @Synchronized set(value) = update(FIRST_DAY_OF_WEEK, value.name)
+
     private fun loadBoolean(key: String, default: Boolean): Boolean {
         val value = load().getProperty(key)?.trim()?.lowercase()
         return when (value) {
@@ -41,6 +57,14 @@ class FileDesktopSemanticPreferences(
 
     private fun loadLong(key: String, default: Long): Long =
         load().getProperty(key)?.trim()?.toLongOrNull()?.takeIf { it >= 0 } ?: default
+
+    private fun loadSignedLong(key: String, default: Long): Long =
+        load().getProperty(key)?.trim()?.toLongOrNull() ?: default
+
+    private fun loadDayOfWeek(key: String, default: DayOfWeek): DayOfWeek =
+        load().getProperty(key)?.trim()?.uppercase()?.let { value ->
+            runCatching { DayOfWeek.valueOf(value) }.getOrNull()
+        } ?: default
 
     private fun update(key: String, value: String) {
         val properties = load().apply { setProperty(key, value) }
@@ -76,8 +100,14 @@ class FileDesktopSemanticPreferences(
     companion object {
         const val DEFAULT_ALLOW_MULTITASKING = true
         const val DEFAULT_IGNORE_SHORT_RECORDS_DURATION_SECONDS = 0L
+        const val DEFAULT_START_OF_DAY_SHIFT_MILLIS = 0L
+        const val MAX_START_OF_DAY_SHIFT_MILLIS = 24 * 60 * 60 * 1000L - 60 * 1000L
+        val DEFAULT_FIRST_DAY_OF_WEEK: DayOfWeek =
+            DayOfWeek.of(((Calendar.getInstance().firstDayOfWeek + 5) % 7) + 1)
         private const val ALLOW_MULTITASKING = "allowMultitasking"
         private const val IGNORE_SHORT_RECORDS_DURATION_SECONDS = "ignoreShortRecordsDurationSeconds"
+        private const val START_OF_DAY_SHIFT_MILLIS = "startOfDayShiftMillis"
+        private const val FIRST_DAY_OF_WEEK = "firstDayOfWeek"
     }
 }
 

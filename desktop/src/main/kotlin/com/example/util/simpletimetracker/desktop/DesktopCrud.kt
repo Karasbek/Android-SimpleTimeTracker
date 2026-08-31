@@ -15,7 +15,7 @@ data class DayRecordRow(
     val tags: List<DesktopRecordTagView> = emptyList(),
 )
 
-private fun DesktopDatabase.crudConnection(): Connection {
+internal fun DesktopDatabase.crudConnection(): Connection {
     val db = DriverManager.getConnection(
         "jdbc:sqlite:${path.toAbsolutePath()}",
     )

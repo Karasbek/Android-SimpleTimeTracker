@@ -440,6 +440,9 @@ fun main() = application {
     val recordService = remember { DesktopRecordService(database) }
     val tagCategoryService = remember { DesktopTagCategoryService(database) }
     val activityEditorService = remember { DesktopActivityEditorService(database) }
+    val timeService = remember { DesktopTimeService(semanticPreferences) }
+    val recordsRangeService = remember { DesktopRecordsRangeService(database) }
+    val savedFilterService = remember { DesktopSavedFilterService(database) }
     val quickActions = remember {
         DesktopQuickActions(database, timerService, DesktopPinnedActivitiesStore())
     }
@@ -519,6 +522,10 @@ fun main() = application {
             recordService = recordService,
             activityEditorService = activityEditorService,
             tagCategoryService = tagCategoryService,
+            semanticPreferences = semanticPreferences,
+            timeService = timeService,
+            recordsRangeService = recordsRangeService,
+            savedFilterService = savedFilterService,
             quickActions = quickActions,
             revision = revision,
             onDataChanged = quickActions::refresh,
