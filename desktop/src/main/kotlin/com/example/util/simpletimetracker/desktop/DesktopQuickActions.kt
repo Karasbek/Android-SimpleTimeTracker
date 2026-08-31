@@ -7,12 +7,6 @@ import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.CopyOnWriteArrayList
 
-interface DesktopTimerRepository {
-    fun activities(): List<ActivityRow>
-    fun toggle(activityId: Long)
-    fun previousCompletedActivityId(): Long?
-}
-
 data class TrayActivity(
     val id: Long,
     val name: String,
@@ -68,6 +62,7 @@ class DesktopPinnedActivitiesStore(
 
 class DesktopQuickActions(
     private val repository: DesktopTimerRepository,
+    private val timerService: DesktopTimerService,
     private val pinnedStore: DesktopPinnedActivitiesStore,
 ) {
     private val listeners = CopyOnWriteArrayList<(DesktopTrayState) -> Unit>()
@@ -89,11 +84,16 @@ class DesktopQuickActions(
 
     @Synchronized
     fun toggle(activityId: Long) {
-        if (repository.activities().none { it.id == activityId }) {
-            publish(buildState())
-            return
-        }
-        repository.toggle(activityId)
+        timerService.toggle(activityId)
+        publish(buildState())
+    }
+
+    val allowMultitasking: Boolean
+        get() = timerService.allowMultitasking
+
+    @Synchronized
+    fun setAllowMultitasking(value: Boolean) {
+        timerService.setAllowMultitasking(value)
         publish(buildState())
     }
 
@@ -110,13 +110,16 @@ class DesktopQuickActions(
     fun repeatPrevious(): RepeatPreviousResult {
         val activityId = repository.previousCompletedActivityId()
             ?: return RepeatPreviousResult.NO_PREVIOUS
-        val activity = repository.activities().firstOrNull { it.id == activityId }
-            ?: return RepeatPreviousResult.NO_PREVIOUS
-        if (activity.startedAt != null) return RepeatPreviousResult.ALREADY_RUNNING
-
-        repository.toggle(activityId)
+        val result = when (timerService.start(activityId)) {
+            TimerActionResult.STARTED -> RepeatPreviousResult.STARTED
+            TimerActionResult.ALREADY_RUNNING -> RepeatPreviousResult.ALREADY_RUNNING
+            TimerActionResult.ACTIVITY_UNAVAILABLE,
+            TimerActionResult.NOT_RUNNING,
+            TimerActionResult.STOPPED,
+            -> RepeatPreviousResult.NO_PREVIOUS
+        }
         publish(buildState())
-        return RepeatPreviousResult.STARTED
+        return result
     }
 
     private fun buildState(): DesktopTrayState {

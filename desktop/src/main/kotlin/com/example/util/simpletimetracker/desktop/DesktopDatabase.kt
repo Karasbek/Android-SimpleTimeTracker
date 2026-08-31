@@ -25,7 +25,6 @@ data class HistoryRow(
 
 class DesktopDatabase(
     databasePath: Path? = null,
-    private val currentTimeMillis: () -> Long = System::currentTimeMillis,
 ) : DesktopTimerRepository {
 
     val path: Path
@@ -47,57 +46,8 @@ class DesktopDatabase(
                 statement.execute("PRAGMA journal_mode=WAL")
                 statement.execute("PRAGMA synchronous=NORMAL")
                 statement.execute("PRAGMA busy_timeout=5000")
-
-                statement.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS recordTypes (
-                        id INTEGER PRIMARY KEY NOT NULL,
-                        name TEXT NOT NULL,
-                        icon TEXT NOT NULL,
-                        color INTEGER NOT NULL,
-                        color_int TEXT NOT NULL,
-                        hidden INTEGER NOT NULL,
-                        instant INTEGER NOT NULL,
-                        instantDuration INTEGER NOT NULL,
-                        note TEXT NOT NULL
-                    )
-                    """.trimIndent(),
-                )
-
-                statement.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS runningRecords (
-                        id INTEGER PRIMARY KEY NOT NULL,
-                        time_started INTEGER NOT NULL,
-                        comment TEXT NOT NULL,
-                        tag_id INTEGER NOT NULL
-                    )
-                    """.trimIndent(),
-                )
-
-                statement.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS records (
-                        id INTEGER PRIMARY KEY NOT NULL,
-                        type_id INTEGER NOT NULL,
-                        time_started INTEGER NOT NULL,
-                        time_ended INTEGER NOT NULL,
-                        comment TEXT NOT NULL,
-                        tag_id INTEGER NOT NULL
-                    )
-                    """.trimIndent(),
-                )
-
-                statement.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS desktop_id_allocator (
-                        id INTEGER PRIMARY KEY CHECK (id = 1),
-                        namespace INTEGER NOT NULL,
-                        next_counter INTEGER NOT NULL
-                    )
-                    """.trimIndent(),
-                )
             }
+            DesktopDatabaseSchema.initialize(db)
 
             db.prepareStatement(
                 "SELECT COUNT(*) FROM desktop_id_allocator WHERE id = 1",
@@ -214,58 +164,107 @@ class DesktopDatabase(
         }
     }
 
-    override fun toggle(activityId: Long) {
+    override fun runningRecords(): List<DesktopRunningRecord> {
+        return connection().use { db ->
+            db.prepareStatement(
+                "SELECT id, time_started, comment, tag_id FROM runningRecords ORDER BY time_started, id",
+            ).use { query ->
+                query.executeQuery().use { result ->
+                    buildList {
+                        while (result.next()) {
+                            add(
+                                DesktopRunningRecord(
+                                    activityId = result.getLong("id"),
+                                    startedAt = result.getLong("time_started"),
+                                    comment = result.getString("comment"),
+                                    tagId = result.getLong("tag_id"),
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    override fun addRunningRecord(record: DesktopRunningRecord): Boolean {
         connection().use { db ->
             db.autoCommit = false
             try {
-                val startedAt = db.prepareStatement(
-                    "SELECT time_started FROM runningRecords WHERE id = ?",
+                val available = db.prepareStatement(
+                    "SELECT COUNT(*) FROM recordTypes WHERE id = ? AND hidden = 0",
+                ).use { query ->
+                    query.setLong(1, record.activityId)
+                    query.executeQuery().use { result ->
+                        result.next() && result.getInt(1) == 1
+                    }
+                }
+                if (!available) {
+                    db.rollback()
+                    return false
+                }
+                val inserted = db.prepareStatement(
+                    "INSERT OR IGNORE INTO runningRecords(id, time_started, comment, tag_id) VALUES(?, ?, ?, ?)",
+                ).use { insert ->
+                    insert.setLong(1, record.activityId)
+                    insert.setLong(2, record.startedAt)
+                    insert.setString(3, record.comment)
+                    insert.setLong(4, record.tagId)
+                    insert.executeUpdate() == 1
+                }
+                db.commit()
+                return inserted
+            } catch (e: Throwable) {
+                db.rollback()
+                throw e
+            }
+        }
+    }
+
+    override fun completeRunningRecord(activityId: Long, endedAt: Long): Boolean {
+        connection().use { db ->
+            db.autoCommit = false
+            try {
+                val running = db.prepareStatement(
+                    "SELECT time_started, comment, tag_id FROM runningRecords WHERE id = ?",
                 ).use { query ->
                     query.setLong(1, activityId)
                     query.executeQuery().use { result ->
-                        if (result.next()) result.getLong(1) else null
+                        if (result.next()) {
+                            Triple(
+                                result.getLong("time_started"),
+                                result.getString("comment"),
+                                result.getLong("tag_id"),
+                            )
+                        } else {
+                            null
+                        }
                     }
+                } ?: run {
+                    db.rollback()
+                    return false
                 }
-
-                if (startedAt == null) {
-                    db.prepareStatement(
-                        "INSERT INTO runningRecords(id, time_started, comment, tag_id) VALUES(?, ?, ?, ?)",
-                    ).use { insert ->
-                        insert.setLong(1, activityId)
-                        insert.setLong(2, currentTimeMillis())
-                        insert.setString(3, "")
-                        insert.setLong(4, 0)
-                        insert.executeUpdate()
-                    }
-                } else {
-                    val recordId = nextId(db)
-                    val endedAt = currentTimeMillis()
-
-                    db.prepareStatement(
-                        """
-                        INSERT INTO records(
-                            id, type_id, time_started, time_ended, comment, tag_id
-                        ) VALUES (?, ?, ?, ?, ?, ?)
-                        """.trimIndent(),
-                    ).use { insert ->
-                        insert.setLong(1, recordId)
-                        insert.setLong(2, activityId)
-                        insert.setLong(3, startedAt)
-                        insert.setLong(4, endedAt)
-                        insert.setString(5, "")
-                        insert.setLong(6, 0)
-                        insert.executeUpdate()
-                    }
-
-                    db.prepareStatement(
-                        "DELETE FROM runningRecords WHERE id = ?",
-                    ).use { delete ->
-                        delete.setLong(1, activityId)
-                        delete.executeUpdate()
-                    }
+                val actualEndedAt = endedAt.coerceAtLeast(running.first)
+                db.prepareStatement(
+                    """
+                    INSERT INTO records(id, type_id, time_started, time_ended, comment, tag_id)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """.trimIndent(),
+                ).use { insert ->
+                    insert.setLong(1, nextId(db))
+                    insert.setLong(2, activityId)
+                    insert.setLong(3, running.first)
+                    insert.setLong(4, actualEndedAt)
+                    insert.setString(5, running.second)
+                    insert.setLong(6, running.third)
+                    insert.executeUpdate()
                 }
-
+                db.prepareStatement("DELETE FROM runningRecords WHERE id = ?").use { delete ->
+                    delete.setLong(1, activityId)
+                    check(delete.executeUpdate() == 1)
+                }
                 db.commit()
+                return true
             } catch (e: Throwable) {
                 db.rollback()
                 throw e

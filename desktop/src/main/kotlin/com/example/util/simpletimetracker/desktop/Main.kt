@@ -115,6 +115,7 @@ private fun Summary(
 @Composable
 private fun TrackerScreen(
     database: DesktopDatabase,
+    timerService: DesktopTimerService,
     activities: List<ActivityRow>,
     history: List<HistoryRow>,
     now: Long,
@@ -179,7 +180,7 @@ private fun TrackerScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
-                                database.toggle(activity.id)
+                                timerService.toggle(activity.id)
                                 onChanged()
                             },
                         elevation = if (activity.startedAt != null) 8.dp else 2.dp,
@@ -348,7 +349,13 @@ private fun StatisticsScreen(
 }
 
 @Composable
-fun DesktopApp(database: DesktopDatabase) {
+fun DesktopApp(
+    database: DesktopDatabase,
+    timerService: DesktopTimerService = DesktopTimerService(
+        database,
+        FileDesktopSemanticPreferences(),
+    ),
+) {
     var selectedTab by remember { mutableIntStateOf(0) }
     var revision by remember { mutableIntStateOf(0) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -402,6 +409,7 @@ fun DesktopApp(database: DesktopDatabase) {
                     when (MainTab.entries[selectedTab]) {
                         MainTab.TRACKER -> TrackerScreen(
                             database = database,
+                            timerService = timerService,
                             activities = activities,
                             history = history,
                             now = now,
@@ -424,8 +432,12 @@ fun DesktopApp(database: DesktopDatabase) {
 
 fun main() = application {
     val database = remember { DesktopDatabase() }
+    val semanticPreferences = remember { FileDesktopSemanticPreferences() }
+    val timerService = remember {
+        DesktopTimerService(database, semanticPreferences)
+    }
     val quickActions = remember {
-        DesktopQuickActions(database, DesktopPinnedActivitiesStore())
+        DesktopQuickActions(database, timerService, DesktopPinnedActivitiesStore())
     }
     val trayActionsExecutor = remember {
         Executors.newSingleThreadExecutor { task ->
