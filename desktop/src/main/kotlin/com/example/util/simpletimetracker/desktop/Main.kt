@@ -25,6 +25,7 @@ import androidx.compose.material.Tab
 import androidx.compose.material.TabRow
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -421,9 +422,33 @@ fun DesktopApp(database: DesktopDatabase) {
 
 fun main() = application {
     val database = remember { DesktopDatabase() }
+    var isWindowVisible by remember { mutableStateOf(true) }
+    var tray by remember { mutableStateOf<DesktopTray?>(null) }
+
+    DisposableEffect(Unit) {
+        tray = DesktopTray.create(
+            onOpen = { isWindowVisible = true },
+            onExit = {
+                tray?.shutdown()
+                exitApplication()
+            },
+        )
+
+        onDispose {
+            tray?.shutdown()
+            tray = null
+        }
+    }
 
     Window(
-        onCloseRequest = ::exitApplication,
+        onCloseRequest = {
+            if (tray != null) {
+                isWindowVisible = false
+            } else {
+                exitApplication()
+            }
+        },
+        visible = isWindowVisible,
         title = "Simple Time Tracker",
         state = WindowState(
             width = 960.dp,
