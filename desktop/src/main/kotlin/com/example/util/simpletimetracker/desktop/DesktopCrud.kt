@@ -12,6 +12,7 @@ data class DayRecordRow(
     val startedAt: Long,
     val endedAt: Long,
     val comment: String,
+    val tags: List<DesktopRecordTagView> = emptyList(),
 )
 
 private fun DesktopDatabase.crudConnection(): Connection {
@@ -20,6 +21,7 @@ private fun DesktopDatabase.crudConnection(): Connection {
     )
     db.createStatement().use {
         it.execute("PRAGMA busy_timeout=5000")
+        it.execute("PRAGMA foreign_keys=ON")
     }
     return db
 }
@@ -38,7 +40,7 @@ fun DesktopDatabase.historyForDate(
     val start = bounds.first
     val end = bounds.second
 
-    return crudConnection().use { db ->
+    val records = crudConnection().use { db ->
         db.prepareStatement(
             """
             SELECT
@@ -76,6 +78,7 @@ fun DesktopDatabase.historyForDate(
             }
         }
     }
+    return records.map { record -> record.copy(tags = recordTagViews(record.id)) }
 }
 
 fun DesktopDatabase.archivedActivities(): List<ActivityRow> {

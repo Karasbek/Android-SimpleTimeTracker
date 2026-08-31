@@ -3,7 +3,7 @@ package com.example.util.simpletimetracker.desktop
 import java.sql.Connection
 
 internal object DesktopDatabaseSchema {
-    const val CURRENT_VERSION = 4
+    const val CURRENT_VERSION = 5
     private const val LEGACY_VERSION = 1
 
     fun initialize(connection: Connection) {
@@ -37,6 +37,7 @@ internal object DesktopDatabaseSchema {
                 1 -> migrate1To2(connection)
                 2 -> migrate2To3(connection)
                 3 -> migrate3To4(connection)
+                4 -> migrate4To5(connection)
                 else -> error("Missing desktop database migration from version $version")
             }
             version++
@@ -51,7 +52,7 @@ internal object DesktopDatabaseSchema {
     }
 
     private fun migrate1To2(connection: Connection) {
-        createIndexes(connection)
+        createCoreIndexes(connection)
     }
 
     private fun migrate2To3(connection: Connection) {
@@ -71,6 +72,11 @@ internal object DesktopDatabaseSchema {
                 "CREATE INDEX IF NOT EXISTS index_records_type_started ON records(type_id, time_started)",
             )
         }
+    }
+
+    private fun migrate4To5(connection: Connection) {
+        createTagCategoryTables(connection)
+        createTagCategoryIndexes(connection)
     }
 
     private fun createTables(connection: Connection) {
@@ -123,9 +129,15 @@ internal object DesktopDatabaseSchema {
                 """.trimIndent(),
             )
         }
+        createTagCategoryTables(connection)
     }
 
     private fun createIndexes(connection: Connection) {
+        createCoreIndexes(connection)
+        createTagCategoryIndexes(connection)
+    }
+
+    private fun createCoreIndexes(connection: Connection) {
         connection.createStatement().use { statement ->
             statement.execute(
                 "CREATE INDEX IF NOT EXISTS index_records_type_ended ON records(type_id, time_ended)",
@@ -136,6 +148,97 @@ internal object DesktopDatabaseSchema {
             statement.execute(
                 "CREATE INDEX IF NOT EXISTS index_records_type_started ON records(type_id, time_started)",
             )
+        }
+    }
+
+    private fun createTagCategoryTables(connection: Connection) {
+        connection.createStatement().use { statement ->
+            statement.execute(
+                """
+                CREATE TABLE IF NOT EXISTS record_tags (
+                    id INTEGER PRIMARY KEY NOT NULL,
+                    name TEXT NOT NULL,
+                    archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
+                    value_type TEXT NOT NULL DEFAULT 'NONE' CHECK (value_type IN ('NONE', 'NUMERIC')),
+                    value_suffix TEXT NOT NULL DEFAULT ''
+                )
+                """.trimIndent(),
+            )
+            statement.execute(
+                """
+                CREATE TABLE IF NOT EXISTS record_to_tag (
+                    record_id INTEGER NOT NULL,
+                    tag_id INTEGER NOT NULL,
+                    numeric_value REAL,
+                    PRIMARY KEY (record_id, tag_id),
+                    FOREIGN KEY (record_id) REFERENCES records(id) ON DELETE RESTRICT,
+                    FOREIGN KEY (tag_id) REFERENCES record_tags(id) ON DELETE RESTRICT
+                )
+                """.trimIndent(),
+            )
+            statement.execute(
+                """
+                CREATE TABLE IF NOT EXISTS running_record_to_tag (
+                    running_record_id INTEGER NOT NULL,
+                    tag_id INTEGER NOT NULL,
+                    numeric_value REAL,
+                    PRIMARY KEY (running_record_id, tag_id),
+                    FOREIGN KEY (running_record_id) REFERENCES runningRecords(id) ON DELETE RESTRICT,
+                    FOREIGN KEY (tag_id) REFERENCES record_tags(id) ON DELETE RESTRICT
+                )
+                """.trimIndent(),
+            )
+            statement.execute(
+                """
+                CREATE TABLE IF NOT EXISTS record_type_to_tag (
+                    record_type_id INTEGER NOT NULL,
+                    tag_id INTEGER NOT NULL,
+                    PRIMARY KEY (record_type_id, tag_id),
+                    FOREIGN KEY (record_type_id) REFERENCES recordTypes(id) ON DELETE RESTRICT,
+                    FOREIGN KEY (tag_id) REFERENCES record_tags(id) ON DELETE RESTRICT
+                )
+                """.trimIndent(),
+            )
+            statement.execute(
+                """
+                CREATE TABLE IF NOT EXISTS record_type_to_default_tag (
+                    record_type_id INTEGER NOT NULL,
+                    tag_id INTEGER NOT NULL,
+                    PRIMARY KEY (record_type_id, tag_id),
+                    FOREIGN KEY (record_type_id) REFERENCES recordTypes(id) ON DELETE RESTRICT,
+                    FOREIGN KEY (tag_id) REFERENCES record_tags(id) ON DELETE RESTRICT
+                )
+                """.trimIndent(),
+            )
+            statement.execute(
+                """
+                CREATE TABLE IF NOT EXISTS categories (
+                    id INTEGER PRIMARY KEY NOT NULL,
+                    name TEXT NOT NULL
+                )
+                """.trimIndent(),
+            )
+            statement.execute(
+                """
+                CREATE TABLE IF NOT EXISTS record_type_category (
+                    record_type_id INTEGER NOT NULL,
+                    category_id INTEGER NOT NULL,
+                    PRIMARY KEY (record_type_id, category_id),
+                    FOREIGN KEY (record_type_id) REFERENCES recordTypes(id) ON DELETE RESTRICT,
+                    FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE RESTRICT
+                )
+                """.trimIndent(),
+            )
+        }
+    }
+
+    private fun createTagCategoryIndexes(connection: Connection) {
+        connection.createStatement().use { statement ->
+            statement.execute("CREATE INDEX IF NOT EXISTS index_record_to_tag_tag ON record_to_tag(tag_id)")
+            statement.execute("CREATE INDEX IF NOT EXISTS index_running_record_to_tag_tag ON running_record_to_tag(tag_id)")
+            statement.execute("CREATE INDEX IF NOT EXISTS index_record_type_to_tag_tag ON record_type_to_tag(tag_id)")
+            statement.execute("CREATE INDEX IF NOT EXISTS index_record_type_to_default_tag_tag ON record_type_to_default_tag(tag_id)")
+            statement.execute("CREATE INDEX IF NOT EXISTS index_record_type_category_category ON record_type_category(category_id)")
         }
     }
 

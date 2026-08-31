@@ -5,6 +5,13 @@ data class DesktopRunningRecord(
     val startedAt: Long,
     val comment: String,
     val tagId: Long,
+    val tags: List<DesktopRecordTag> = emptyList(),
+)
+
+data class DesktopPreviousRecord(
+    val activityId: Long,
+    val comment: String,
+    val tags: List<DesktopRecordTag>,
 )
 
 interface DesktopTimerRepository {
@@ -21,6 +28,17 @@ interface DesktopTimerRepository {
     fun completeRunningRecord(activityId: Long, endedAt: Long): Boolean
     fun discardRunningRecord(activityId: Long): Boolean
     fun previousCompletedActivityId(): Long?
+    fun defaultTagsForActivity(activityId: Long): List<DesktopRecordTag> = emptyList()
+    fun addCompletedRecordWithTags(
+        activityId: Long,
+        startedAt: Long,
+        endedAt: Long,
+        comment: String,
+        tags: List<DesktopRecordTag>,
+    ): Boolean = addCompletedRecord(activityId, startedAt, endedAt, comment, 0)
+    fun previousCompletedRecord(): DesktopPreviousRecord? = previousCompletedActivityId()?.let {
+        DesktopPreviousRecord(activityId = it, comment = "", tags = emptyList())
+    }
 }
 
 enum class TimerActionResult {
@@ -62,7 +80,24 @@ class DesktopTimerService(
     }
 
     @Synchronized
-    fun start(activityId: Long): TimerActionResult {
+    fun start(activityId: Long): TimerActionResult = start(
+        activityId = activityId,
+        tags = emptyList(),
+        comment = "",
+    )
+
+    @Synchronized
+    fun repeat(previous: DesktopPreviousRecord): TimerActionResult = start(
+        activityId = previous.activityId,
+        tags = previous.tags,
+        comment = previous.comment,
+    )
+
+    private fun start(
+        activityId: Long,
+        tags: List<DesktopRecordTag>,
+        comment: String,
+    ): TimerActionResult {
         val activity = repository.activities().firstOrNull { it.id == activityId }
         if (activity == null) {
             return TimerActionResult.ACTIVITY_UNAVAILABLE
@@ -78,10 +113,18 @@ class DesktopTimerService(
                 .forEach { stopAt(it, timestamp) }
         }
 
+        val actualTags = mergeTags(tags, repository.defaultTagsForActivity(activityId))
+
         if (activity.defaultDurationSeconds > 0) {
             val endedAt = timestamp + activity.defaultDurationSeconds * 1000L
             return if (
-                repository.addCompletedRecord(activityId, timestamp, endedAt, "", 0)
+                repository.addCompletedRecordWithTags(
+                    activityId = activityId,
+                    startedAt = timestamp,
+                    endedAt = endedAt,
+                    comment = comment,
+                    tags = actualTags,
+                )
             ) {
                 TimerActionResult.COMPLETED
             } else {
@@ -94,8 +137,9 @@ class DesktopTimerService(
                 DesktopRunningRecord(
                     activityId = activityId,
                     startedAt = timestamp,
-                    comment = "",
+                    comment = comment,
                     tagId = 0,
+                    tags = actualTags,
                 ),
             )
         ) {
@@ -126,5 +170,19 @@ class DesktopTimerService(
         } else {
             repository.discardRunningRecord(running.activityId)
         }
+    }
+
+    private fun mergeTags(
+        provided: List<DesktopRecordTag>,
+        defaults: List<DesktopRecordTag>,
+    ): List<DesktopRecordTag> {
+        val merged = linkedMapOf<Long, DesktopRecordTag>()
+        (provided + defaults).forEach { tag ->
+            val previous = merged[tag.tagId]
+            if (previous == null || (previous.numericValue == null && tag.numericValue != null)) {
+                merged[tag.tagId] = tag
+            }
+        }
+        return merged.values.toList()
     }
 }

@@ -100,6 +100,37 @@ class DesktopDatabaseMigrationTest {
         assertEquals("", textValue(path, "SELECT comment FROM records WHERE id = 2"))
     }
 
+    @Test
+    fun version4MigratesToVersion5WithoutUsingLegacyTagIdAsRelationData() {
+        val path = temporaryPath()
+        createLegacyDatabase(path, version = 2)
+        connection(path) { db ->
+            db.createStatement().use { statement ->
+                statement.execute(
+                    "ALTER TABLE recordTypes ADD COLUMN default_duration INTEGER NOT NULL DEFAULT 0",
+                )
+                statement.execute("UPDATE records SET tag_id = 77")
+                statement.execute("UPDATE runningRecords SET tag_id = 88")
+                statement.execute("PRAGMA user_version = 4")
+            }
+        }
+
+        val database = DesktopDatabase(path)
+
+        assertEquals(DesktopDatabaseSchema.CURRENT_VERSION, userVersion(path))
+        assertEquals(listOf(ActivityRow(1, "Running", 100)), database.activities())
+        assertEquals(1, database.runningRecords().size)
+        assertEquals(1, rowCount(path, "records"))
+        assertEquals(77L, columnValue(path, "SELECT tag_id FROM records WHERE id = 2"))
+        assertEquals(88L, columnValue(path, "SELECT tag_id FROM runningRecords WHERE id = 1"))
+        assertEquals(0, rowCount(path, "record_to_tag"))
+        assertTrue(tableNames(path).containsAll(TAG_CATEGORY_TABLES))
+
+        val reopened = DesktopDatabase(path)
+        assertEquals(1, reopened.historyToday().size)
+        assertTrue(reopened.tags().isEmpty())
+    }
+
     private fun createLegacyDatabase(path: Path, version: Int, instantDuration: Long = 0) {
         Class.forName("org.sqlite.JDBC")
         DriverManager.getConnection("jdbc:sqlite:$path").use { db ->
@@ -192,11 +223,21 @@ class DesktopDatabaseMigrationTest {
         Files.createTempDirectory("desktop-migration-test").resolve("tracker.sqlite3")
 
     companion object {
+        private val TAG_CATEGORY_TABLES = setOf(
+            "record_tags",
+            "record_to_tag",
+            "running_record_to_tag",
+            "record_type_to_tag",
+            "record_type_to_default_tag",
+            "categories",
+            "record_type_category",
+        )
+
         private val EXPECTED_TABLES = setOf(
             "recordTypes",
             "runningRecords",
             "records",
             "desktop_id_allocator",
-        )
+        ) + TAG_CATEGORY_TABLES
     }
 }

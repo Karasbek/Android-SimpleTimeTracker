@@ -27,7 +27,8 @@ data class HistoryRow(
 class DesktopDatabase(
     databasePath: Path? = null,
 ) : DesktopTimerRepository,
-    DesktopRecordRepository {
+    DesktopRecordRepository,
+    DesktopTagCategoryRepository {
 
     val path: Path
 
@@ -70,9 +71,13 @@ class DesktopDatabase(
         }
     }
 
-    private fun connection(): Connection {
-        return DriverManager.getConnection("jdbc:sqlite:${path.toAbsolutePath()}")
-    }
+    private fun connection(): Connection =
+        DriverManager.getConnection("jdbc:sqlite:${path.toAbsolutePath()}").also { db ->
+            db.createStatement().use { statement ->
+                statement.execute("PRAGMA busy_timeout=5000")
+                statement.execute("PRAGMA foreign_keys=ON")
+            }
+        }
 
     internal fun nextId(db: Connection): Long {
         val values = db.prepareStatement(
@@ -183,6 +188,7 @@ class DesktopDatabase(
                                     startedAt = result.getLong("time_started"),
                                     comment = result.getString("comment"),
                                     tagId = result.getLong("tag_id"),
+                                    tags = runningRecordTags(db, result.getLong("id")),
                                 ),
                             )
                         }
@@ -217,6 +223,9 @@ class DesktopDatabase(
                     insert.setLong(4, record.tagId)
                     insert.executeUpdate() == 1
                 }
+                if (inserted) {
+                    replaceRunningRecordTags(db, record.activityId, record.tags)
+                }
                 db.commit()
                 return inserted
             } catch (e: Throwable) {
@@ -232,6 +241,20 @@ class DesktopDatabase(
         endedAt: Long,
         comment: String,
         tagId: Long,
+    ): Boolean = addCompletedRecordWithTags(
+        activityId = activityId,
+        startedAt = startedAt,
+        endedAt = endedAt,
+        comment = comment,
+        tags = emptyList(),
+    )
+
+    override fun addCompletedRecordWithTags(
+        activityId: Long,
+        startedAt: Long,
+        endedAt: Long,
+        comment: String,
+        tags: List<DesktopRecordTag>,
     ): Boolean {
         connection().use { db ->
             db.autoCommit = false
@@ -248,7 +271,8 @@ class DesktopDatabase(
                     db.rollback()
                     return false
                 }
-                insertCompletedRecord(db, activityId, startedAt, endedAt, comment, tagId)
+                val recordId = insertCompletedRecord(db, activityId, startedAt, endedAt, comment, 0)
+                replaceRecordTags(db, recordId, tags)
                 db.commit()
                 return true
             } catch (error: Throwable) {
@@ -264,6 +288,7 @@ class DesktopDatabase(
         startedAt: Long,
         endedAt: Long,
         comment: String,
+        tags: List<DesktopRecordTag>,
     ): Boolean {
         connection().use { db ->
             db.autoCommit = false
@@ -292,6 +317,9 @@ class DesktopDatabase(
                     update.setLong(5, recordId)
                     update.executeUpdate() == 1
                 }
+                if (updated) {
+                    replaceRecordTags(db, recordId, tags)
+                }
                 db.commit()
                 return updated
             } catch (error: Throwable) {
@@ -303,9 +331,21 @@ class DesktopDatabase(
 
     override fun deleteCompletedRecord(recordId: Long): Boolean {
         return connection().use { db ->
-            db.prepareStatement("DELETE FROM records WHERE id = ?").use { delete ->
-                delete.setLong(1, recordId)
-                delete.executeUpdate() == 1
+            db.autoCommit = false
+            try {
+                db.prepareStatement("DELETE FROM record_to_tag WHERE record_id = ?").use { delete ->
+                    delete.setLong(1, recordId)
+                    delete.executeUpdate()
+                }
+                val deleted = db.prepareStatement("DELETE FROM records WHERE id = ?").use { delete ->
+                    delete.setLong(1, recordId)
+                    delete.executeUpdate() == 1
+                }
+                db.commit()
+                deleted
+            } catch (error: Throwable) {
+                db.rollback()
+                throw error
             }
         }
     }
@@ -333,8 +373,9 @@ class DesktopDatabase(
                     db.rollback()
                     return false
                 }
+                val tags = runningRecordTags(db, activityId)
                 val actualEndedAt = endedAt.coerceAtLeast(running.first)
-                insertCompletedRecord(
+                val recordId = insertCompletedRecord(
                     db,
                     activityId,
                     running.first,
@@ -342,6 +383,11 @@ class DesktopDatabase(
                     running.second,
                     running.third,
                 )
+                replaceRecordTags(db, recordId, tags)
+                db.prepareStatement("DELETE FROM running_record_to_tag WHERE running_record_id = ?").use { delete ->
+                    delete.setLong(1, activityId)
+                    delete.executeUpdate()
+                }
                 db.prepareStatement("DELETE FROM runningRecords WHERE id = ?").use { delete ->
                     delete.setLong(1, activityId)
                     check(delete.executeUpdate() == 1)
@@ -357,9 +403,21 @@ class DesktopDatabase(
 
     override fun discardRunningRecord(activityId: Long): Boolean {
         return connection().use { db ->
-            db.prepareStatement("DELETE FROM runningRecords WHERE id = ?").use { delete ->
-                delete.setLong(1, activityId)
-                delete.executeUpdate() == 1
+            db.autoCommit = false
+            try {
+                db.prepareStatement("DELETE FROM running_record_to_tag WHERE running_record_id = ?").use { delete ->
+                    delete.setLong(1, activityId)
+                    delete.executeUpdate()
+                }
+                val discarded = db.prepareStatement("DELETE FROM runningRecords WHERE id = ?").use { delete ->
+                    delete.setLong(1, activityId)
+                    delete.executeUpdate() == 1
+                }
+                db.commit()
+                discarded
+            } catch (error: Throwable) {
+                db.rollback()
+                throw error
             }
         }
     }
@@ -371,14 +429,15 @@ class DesktopDatabase(
         endedAt: Long,
         comment: String,
         tagId: Long,
-    ) {
+    ): Long {
+        val recordId = nextId(db)
         db.prepareStatement(
             """
             INSERT INTO records(id, type_id, time_started, time_ended, comment, tag_id)
             VALUES (?, ?, ?, ?, ?, ?)
             """.trimIndent(),
         ).use { insert ->
-            insert.setLong(1, nextId(db))
+            insert.setLong(1, recordId)
             insert.setLong(2, activityId)
             insert.setLong(3, startedAt)
             insert.setLong(4, endedAt.coerceAtLeast(startedAt))
@@ -386,6 +445,7 @@ class DesktopDatabase(
             insert.setLong(6, tagId)
             insert.executeUpdate()
         }
+        return recordId
     }
 
     override fun previousCompletedActivityId(): Long? {
@@ -402,6 +462,474 @@ class DesktopDatabase(
             ).use { query ->
                 query.executeQuery().use { result ->
                     if (result.next()) result.getLong(1) else null
+                }
+            }
+        }
+    }
+
+    override fun previousCompletedRecord(): DesktopPreviousRecord? {
+        return connection().use { db ->
+            db.prepareStatement(
+                """
+                SELECT r.id, r.type_id, r.comment
+                FROM records r
+                JOIN recordTypes rt ON rt.id = r.type_id
+                WHERE rt.hidden = 0 AND rt.default_duration = 0
+                ORDER BY r.time_ended DESC, r.id DESC
+                LIMIT 1
+                """.trimIndent(),
+            ).use { query ->
+                query.executeQuery().use { result ->
+                    if (!result.next()) return@use null
+                    DesktopPreviousRecord(
+                        activityId = result.getLong("type_id"),
+                        comment = result.getString("comment"),
+                        tags = recordTags(db, result.getLong("id"), activeOnly = true),
+                    )
+                }
+            }
+        }
+    }
+
+    override fun defaultTagsForActivity(activityId: Long): List<DesktopRecordTag> {
+        return connection().use { db ->
+            db.prepareStatement(
+                """
+                SELECT d.tag_id
+                FROM record_type_to_default_tag d
+                JOIN record_tags t ON t.id = d.tag_id
+                WHERE d.record_type_id = ? AND t.archived = 0
+                ORDER BY t.name COLLATE NOCASE, t.id
+                """.trimIndent(),
+            ).use { query ->
+                query.setLong(1, activityId)
+                query.executeQuery().use { result ->
+                    buildList {
+                        while (result.next()) add(DesktopRecordTag(result.getLong(1), null))
+                    }
+                }
+            }
+        }
+    }
+
+    override fun tags(): List<DesktopTag> {
+        return connection().use { db ->
+            db.prepareStatement(
+                """
+                SELECT id, name, archived, value_type, value_suffix
+                FROM record_tags
+                ORDER BY archived, name COLLATE NOCASE, id
+                """.trimIndent(),
+            ).use { query ->
+                query.executeQuery().use { result ->
+                    buildList {
+                        while (result.next()) {
+                            add(
+                                DesktopTag(
+                                    id = result.getLong("id"),
+                                    name = result.getString("name"),
+                                    archived = result.getInt("archived") != 0,
+                                    valueType = DesktopTagValueType.valueOf(result.getString("value_type")),
+                                    valueSuffix = result.getString("value_suffix"),
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    override fun categories(): List<DesktopCategory> {
+        return connection().use { db ->
+            db.prepareStatement("SELECT id, name FROM categories ORDER BY name COLLATE NOCASE, id").use { query ->
+                query.executeQuery().use { result ->
+                    buildList {
+                        while (result.next()) {
+                            add(DesktopCategory(result.getLong("id"), result.getString("name")))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    override fun saveTag(tagId: Long, draft: DesktopTagDraft): Long {
+        return connection().use { db ->
+            db.autoCommit = false
+            try {
+                val id = if (tagId == 0L) nextId(db) else tagId
+                val saved = if (tagId == 0L) {
+                    db.prepareStatement(
+                        """
+                        INSERT INTO record_tags(id, name, archived, value_type, value_suffix)
+                        VALUES (?, ?, 0, ?, ?)
+                        """.trimIndent(),
+                    ).use { insert ->
+                        insert.setLong(1, id)
+                        insert.setString(2, draft.name)
+                        insert.setString(3, draft.valueType.name)
+                        insert.setString(4, draft.valueSuffix)
+                        insert.executeUpdate() == 1
+                    }
+                } else {
+                    db.prepareStatement(
+                        "UPDATE record_tags SET name = ?, value_type = ?, value_suffix = ? WHERE id = ?",
+                    ).use { update ->
+                        update.setString(1, draft.name)
+                        update.setString(2, draft.valueType.name)
+                        update.setString(3, draft.valueSuffix)
+                        update.setLong(4, id)
+                        update.executeUpdate() == 1
+                    }
+                }
+                check(saved) { "Тег не найден" }
+                db.commit()
+                id
+            } catch (error: Throwable) {
+                db.rollback()
+                throw error
+            }
+        }
+    }
+
+    override fun setTagArchived(tagId: Long, archived: Boolean): Boolean {
+        return connection().use { db ->
+            db.prepareStatement("UPDATE record_tags SET archived = ? WHERE id = ?").use { update ->
+                update.setInt(1, if (archived) 1 else 0)
+                update.setLong(2, tagId)
+                update.executeUpdate() == 1
+            }
+        }
+    }
+
+    override fun deleteTag(tagId: Long): Boolean {
+        return connection().use { db ->
+            db.autoCommit = false
+            try {
+                listOf(
+                    "DELETE FROM record_to_tag WHERE tag_id = ?",
+                    "DELETE FROM running_record_to_tag WHERE tag_id = ?",
+                    "DELETE FROM record_type_to_tag WHERE tag_id = ?",
+                    "DELETE FROM record_type_to_default_tag WHERE tag_id = ?",
+                ).forEach { sql ->
+                    db.prepareStatement(sql).use { delete ->
+                        delete.setLong(1, tagId)
+                        delete.executeUpdate()
+                    }
+                }
+                val deleted = db.prepareStatement("DELETE FROM record_tags WHERE id = ?").use { delete ->
+                    delete.setLong(1, tagId)
+                    delete.executeUpdate() == 1
+                }
+                db.commit()
+                deleted
+            } catch (error: Throwable) {
+                db.rollback()
+                throw error
+            }
+        }
+    }
+
+    override fun saveCategory(categoryId: Long, draft: DesktopCategoryDraft): Long {
+        return connection().use { db ->
+            db.autoCommit = false
+            try {
+                val id = if (categoryId == 0L) nextId(db) else categoryId
+                val saved = if (categoryId == 0L) {
+                    db.prepareStatement("INSERT INTO categories(id, name) VALUES (?, ?)").use { insert ->
+                        insert.setLong(1, id)
+                        insert.setString(2, draft.name)
+                        insert.executeUpdate() == 1
+                    }
+                } else {
+                    db.prepareStatement("UPDATE categories SET name = ? WHERE id = ?").use { update ->
+                        update.setString(1, draft.name)
+                        update.setLong(2, id)
+                        update.executeUpdate() == 1
+                    }
+                }
+                check(saved) { "Категория не найдена" }
+                db.commit()
+                id
+            } catch (error: Throwable) {
+                db.rollback()
+                throw error
+            }
+        }
+    }
+
+    override fun deleteCategory(categoryId: Long): Boolean {
+        return connection().use { db ->
+            db.autoCommit = false
+            try {
+                db.prepareStatement("DELETE FROM record_type_category WHERE category_id = ?").use { delete ->
+                    delete.setLong(1, categoryId)
+                    delete.executeUpdate()
+                }
+                val deleted = db.prepareStatement("DELETE FROM categories WHERE id = ?").use { delete ->
+                    delete.setLong(1, categoryId)
+                    delete.executeUpdate() == 1
+                }
+                db.commit()
+                deleted
+            } catch (error: Throwable) {
+                db.rollback()
+                throw error
+            }
+        }
+    }
+
+    override fun categoryIdsForActivity(activityId: Long): Set<Long> = relationIds(
+        table = "record_type_category",
+        valueColumn = "category_id",
+        activityId = activityId,
+    )
+
+    override fun allowedTagIdsForActivity(activityId: Long): Set<Long> = relationIds(
+        table = "record_type_to_tag",
+        valueColumn = "tag_id",
+        activityId = activityId,
+    )
+
+    override fun defaultTagIdsForActivity(activityId: Long): Set<Long> = relationIds(
+        table = "record_type_to_default_tag",
+        valueColumn = "tag_id",
+        activityId = activityId,
+    )
+
+    override fun updateActivityDetails(activityId: Long, draft: DesktopActivityDetailsDraft): Boolean {
+        return connection().use { db ->
+            db.autoCommit = false
+            try {
+                val updated = db.prepareStatement(
+                    "UPDATE recordTypes SET name = ?, default_duration = ? WHERE id = ?",
+                ).use { update ->
+                    update.setString(1, draft.name)
+                    update.setLong(2, draft.defaultDurationSeconds)
+                    update.setLong(3, activityId)
+                    update.executeUpdate() == 1
+                }
+                if (!updated) {
+                    db.rollback()
+                    return false
+                }
+                replaceActivityRelations(db, activityId, "record_type_category", "category_id", draft.categoryIds)
+                replaceActivityRelations(db, activityId, "record_type_to_tag", "tag_id", draft.allowedTagIds)
+                replaceActivityRelations(
+                    db,
+                    activityId,
+                    "record_type_to_default_tag",
+                    "tag_id",
+                    draft.defaultTagIds,
+                )
+                db.commit()
+                true
+            } catch (error: Throwable) {
+                db.rollback()
+                throw error
+            }
+        }
+    }
+
+    fun selectableTagsForActivity(activityId: Long): List<DesktopTag> {
+        return connection().use { db ->
+            db.prepareStatement(
+                """
+                SELECT t.id, t.name, t.archived, t.value_type, t.value_suffix
+                FROM record_tags t
+                WHERE t.archived = 0
+                  AND (
+                    NOT EXISTS (SELECT 1 FROM record_type_to_tag assigned WHERE assigned.tag_id = t.id)
+                    OR EXISTS (
+                        SELECT 1 FROM record_type_to_tag assigned
+                        WHERE assigned.tag_id = t.id AND assigned.record_type_id = ?
+                    )
+                  )
+                ORDER BY t.name COLLATE NOCASE, t.id
+                """.trimIndent(),
+            ).use { query ->
+                query.setLong(1, activityId)
+                query.executeQuery().use { result ->
+                    buildList {
+                        while (result.next()) {
+                            add(
+                                DesktopTag(
+                                    id = result.getLong("id"),
+                                    name = result.getString("name"),
+                                    archived = false,
+                                    valueType = DesktopTagValueType.valueOf(result.getString("value_type")),
+                                    valueSuffix = result.getString("value_suffix"),
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun recordTagViews(recordId: Long): List<DesktopRecordTagView> = connection().use { db ->
+        recordTagViews(db, recordId)
+    }
+
+    private fun relationIds(table: String, valueColumn: String, activityId: Long): Set<Long> {
+        return connection().use { db ->
+            db.prepareStatement(
+                "SELECT $valueColumn FROM $table WHERE record_type_id = ?",
+            ).use { query ->
+                query.setLong(1, activityId)
+                query.executeQuery().use { result ->
+                    buildSet { while (result.next()) add(result.getLong(1)) }
+                }
+            }
+        }
+    }
+
+    private fun replaceActivityRelations(
+        db: Connection,
+        activityId: Long,
+        table: String,
+        valueColumn: String,
+        ids: Set<Long>,
+    ) {
+        db.prepareStatement("DELETE FROM $table WHERE record_type_id = ?").use { delete ->
+            delete.setLong(1, activityId)
+            delete.executeUpdate()
+        }
+        db.prepareStatement("INSERT INTO $table(record_type_id, $valueColumn) VALUES (?, ?)").use { insert ->
+            ids.forEach { id ->
+                insert.setLong(1, activityId)
+                insert.setLong(2, id)
+                insert.addBatch()
+            }
+            insert.executeBatch()
+        }
+    }
+
+    private fun replaceRecordTags(
+        db: Connection,
+        recordId: Long,
+        tags: List<DesktopRecordTag>,
+    ) {
+        db.prepareStatement("DELETE FROM record_to_tag WHERE record_id = ?").use { delete ->
+            delete.setLong(1, recordId)
+            delete.executeUpdate()
+        }
+        insertTagRelations(db, "record_to_tag", "record_id", recordId, tags)
+    }
+
+    private fun replaceRunningRecordTags(
+        db: Connection,
+        runningRecordId: Long,
+        tags: List<DesktopRecordTag>,
+    ) {
+        db.prepareStatement("DELETE FROM running_record_to_tag WHERE running_record_id = ?").use { delete ->
+            delete.setLong(1, runningRecordId)
+            delete.executeUpdate()
+        }
+        insertTagRelations(db, "running_record_to_tag", "running_record_id", runningRecordId, tags)
+    }
+
+    private fun insertTagRelations(
+        db: Connection,
+        table: String,
+        recordColumn: String,
+        recordId: Long,
+        tags: List<DesktopRecordTag>,
+    ) {
+        if (tags.isEmpty()) return
+        db.prepareStatement(
+            "INSERT INTO $table($recordColumn, tag_id, numeric_value) VALUES (?, ?, ?)",
+        ).use { insert ->
+            tags.forEach { tag ->
+                insert.setLong(1, recordId)
+                insert.setLong(2, tag.tagId)
+                if (tag.numericValue == null) insert.setNull(3, java.sql.Types.REAL)
+                else insert.setDouble(3, tag.numericValue)
+                insert.addBatch()
+            }
+            insert.executeBatch()
+        }
+    }
+
+    private fun recordTags(
+        db: Connection,
+        recordId: Long,
+        activeOnly: Boolean,
+    ): List<DesktopRecordTag> {
+        val archiveFilter = if (activeOnly) "AND t.archived = 0" else ""
+        return db.prepareStatement(
+            """
+            SELECT rtt.tag_id, rtt.numeric_value
+            FROM record_to_tag rtt
+            JOIN record_tags t ON t.id = rtt.tag_id
+            WHERE rtt.record_id = ? $archiveFilter
+            ORDER BY t.name COLLATE NOCASE, t.id
+            """.trimIndent(),
+        ).use { query ->
+            query.setLong(1, recordId)
+            query.executeQuery().use { result ->
+                buildList {
+                    while (result.next()) {
+                        val value = result.getDouble("numeric_value")
+                        val numericValue = value.takeUnless { result.wasNull() }
+                        add(DesktopRecordTag(result.getLong("tag_id"), numericValue))
+                    }
+                }
+            }
+        }
+    }
+
+    private fun runningRecordTags(db: Connection, runningRecordId: Long): List<DesktopRecordTag> {
+        return db.prepareStatement(
+            """
+            SELECT rtt.tag_id, rtt.numeric_value
+            FROM running_record_to_tag rtt
+            JOIN record_tags t ON t.id = rtt.tag_id
+            WHERE rtt.running_record_id = ?
+            ORDER BY t.name COLLATE NOCASE, t.id
+            """.trimIndent(),
+        ).use { query ->
+            query.setLong(1, runningRecordId)
+            query.executeQuery().use { result ->
+                buildList {
+                    while (result.next()) {
+                        val value = result.getDouble("numeric_value")
+                        val numericValue = value.takeUnless { result.wasNull() }
+                        add(DesktopRecordTag(result.getLong("tag_id"), numericValue))
+                    }
+                }
+            }
+        }
+    }
+
+    private fun recordTagViews(db: Connection, recordId: Long): List<DesktopRecordTagView> {
+        return db.prepareStatement(
+            """
+            SELECT t.id, t.name, t.value_type, t.value_suffix, rtt.numeric_value
+            FROM record_to_tag rtt
+            JOIN record_tags t ON t.id = rtt.tag_id
+            WHERE rtt.record_id = ?
+            ORDER BY t.name COLLATE NOCASE, t.id
+            """.trimIndent(),
+        ).use { query ->
+            query.setLong(1, recordId)
+            query.executeQuery().use { result ->
+                buildList {
+                    while (result.next()) {
+                        val value = result.getDouble("numeric_value")
+                        val numericValue = value.takeUnless { result.wasNull() }
+                        add(
+                            DesktopRecordTagView(
+                                tagId = result.getLong("id"),
+                                name = result.getString("name"),
+                                valueType = DesktopTagValueType.valueOf(result.getString("value_type")),
+                                valueSuffix = result.getString("value_suffix"),
+                                numericValue = numericValue,
+                            ),
+                        )
+                    }
                 }
             }
         }

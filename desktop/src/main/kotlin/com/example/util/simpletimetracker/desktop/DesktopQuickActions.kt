@@ -117,9 +117,9 @@ class DesktopQuickActions(
 
     @Synchronized
     fun repeatPrevious(): RepeatPreviousResult {
-        val activityId = repository.previousCompletedActivityId()
+        val previous = repository.previousCompletedRecord()
             ?: return RepeatPreviousResult.NO_PREVIOUS
-        val result = when (timerService.start(activityId)) {
+        val result = when (timerService.repeat(previous)) {
             TimerActionResult.STARTED -> RepeatPreviousResult.STARTED
             TimerActionResult.COMPLETED -> RepeatPreviousResult.STARTED
             TimerActionResult.ALREADY_RUNNING -> RepeatPreviousResult.ALREADY_RUNNING

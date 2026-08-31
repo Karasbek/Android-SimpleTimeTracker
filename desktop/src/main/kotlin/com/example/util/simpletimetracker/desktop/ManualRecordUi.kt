@@ -3,7 +3,6 @@ package com.example.util.simpletimetracker.desktop
 import androidx.compose.material.Button
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
-import java.awt.GridLayout
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -20,6 +19,7 @@ private data class ManualRecordResult(
     val startedAt: Long,
     val endedAt: Long,
     val comment: String,
+    val tags: List<DesktopRecordTag>,
 )
 
 private val manualDateTimeFormatter =
@@ -42,6 +42,7 @@ private fun manualDateTimeParse(value: String): Long {
 }
 
 private fun showManualRecordDialog(
+    database: DesktopDatabase,
     activities: List<ActivityRow>,
     date: LocalDate,
 ): ManualRecordResult? {
@@ -84,9 +85,7 @@ private fun showManualRecordDialog(
 
     val commentField = JTextField("")
 
-    val panel = JPanel(
-        GridLayout(0, 1, 4, 4),
-    )
+    val panel = desktopFormPanel()
 
     panel.add(JLabel("Активность"))
     panel.add(activityBox)
@@ -100,13 +99,7 @@ private fun showManualRecordDialog(
     panel.add(JLabel("Комментарий"))
     panel.add(commentField)
 
-    val result = JOptionPane.showConfirmDialog(
-        null,
-        panel,
-        "Добавить запись",
-        JOptionPane.OK_CANCEL_OPTION,
-        JOptionPane.PLAIN_MESSAGE,
-    )
+    val result = showDesktopConfirmDialog(panel, "Добавить запись")
 
     if (result != JOptionPane.OK_OPTION) {
         return null
@@ -123,11 +116,17 @@ private fun showManualRecordDialog(
         val endedAt =
             manualDateTimeParse(endedField.text)
 
+        val activityId = activities[selectedIndex].id
+        val tags = selectDesktopRecordTagsDialog(
+            tags = database.selectableTagsForActivity(activityId),
+            selected = emptyList(),
+        ) ?: return null
         ManualRecordResult(
-            activityId = activities[selectedIndex].id,
+            activityId = activityId,
             startedAt = startedAt,
             endedAt = endedAt,
             comment = commentField.text,
+            tags = tags,
         )
     } catch (_: Throwable) {
         JOptionPane.showMessageDialog(
@@ -140,6 +139,7 @@ private fun showManualRecordDialog(
 
 @Composable
 fun ManualRecordButton(
+    database: DesktopDatabase,
     recordService: DesktopRecordService,
     activities: List<ActivityRow>,
     date: LocalDate,
@@ -148,6 +148,7 @@ fun ManualRecordButton(
     Button(
         onClick = {
             val record = showManualRecordDialog(
+                database = database,
                 activities = activities,
                 date = date,
             )
@@ -160,11 +161,16 @@ fun ManualRecordButton(
                             startedAt = record.startedAt,
                             endedAt = record.endedAt,
                             comment = record.comment,
+                            tags = record.tags,
                         ),
                     )) {
                         RecordWriteResult.SAVED -> onChanged()
                         RecordWriteResult.ACTIVITY_UNAVAILABLE ->
                             JOptionPane.showMessageDialog(null, "Активность недоступна")
+                        RecordWriteResult.TAG_UNAVAILABLE ->
+                            JOptionPane.showMessageDialog(null, "Тег недоступен")
+                        RecordWriteResult.INVALID_TAG_VALUE ->
+                            JOptionPane.showMessageDialog(null, "Некорректное значение тега")
                         RecordWriteResult.RECORD_MISSING -> Unit
                     }
                 } catch (e: Throwable) {

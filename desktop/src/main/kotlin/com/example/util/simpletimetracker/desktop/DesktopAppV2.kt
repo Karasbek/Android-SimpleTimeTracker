@@ -38,7 +38,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
-import java.awt.GridLayout
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -157,41 +156,13 @@ private data class RecordEditResult(
     val startedAt: Long,
     val endedAt: Long,
     val comment: String,
+    val tags: List<DesktopRecordTag>,
 )
-
-private data class ActivityEditResult(
-    val name: String,
-    val defaultDurationSeconds: Long,
-)
-
-private fun editActivityDialog(activity: ActivityRow): ActivityEditResult? {
-    val nameField = JTextField(activity.name)
-    val durationField = JTextField(activity.defaultDurationSeconds.toString())
-    val panel = JPanel(GridLayout(0, 1, 4, 4))
-    panel.add(JLabel("Название"))
-    panel.add(nameField)
-    panel.add(JLabel("Длительность мгновенной записи в секундах (0 — обычный таймер)"))
-    panel.add(durationField)
-    if (JOptionPane.showConfirmDialog(
-            null,
-            panel,
-            "Изменить активность",
-            JOptionPane.OK_CANCEL_OPTION,
-            JOptionPane.PLAIN_MESSAGE,
-        ) != JOptionPane.OK_OPTION
-    ) return null
-    val duration = durationField.text.trim().toLongOrNull()
-    return if (nameField.text.isBlank() || duration == null || duration < 0) {
-        JOptionPane.showMessageDialog(null, "Укажите название и неотрицательную длительность")
-        null
-    } else {
-        ActivityEditResult(nameField.text, duration)
-    }
-}
 
 private fun editRecordDialog(
     record: DayRecordRow,
     activities: List<ActivityRow>,
+    database: DesktopDatabase,
 ): RecordEditResult? {
     if (activities.isEmpty()) return null
     val activityBox = JComboBox(activities.map(ActivityRow::name).toTypedArray())
@@ -205,8 +176,7 @@ private fun editRecordDialog(
     val commentField =
         JTextField(record.comment)
 
-    val panel =
-        JPanel(GridLayout(0, 1, 4, 4))
+    val panel = desktopFormPanel()
 
     panel.add(JLabel("Активность"))
     panel.add(activityBox)
@@ -220,14 +190,7 @@ private fun editRecordDialog(
     panel.add(JLabel("Комментарий"))
     panel.add(commentField)
 
-    val result =
-        JOptionPane.showConfirmDialog(
-            null,
-            panel,
-            "Редактировать запись",
-            JOptionPane.OK_CANCEL_OPTION,
-            JOptionPane.PLAIN_MESSAGE,
-        )
+    val result = showDesktopConfirmDialog(panel, "Редактировать запись")
 
     if (result != JOptionPane.OK_OPTION) {
         return null
@@ -240,11 +203,21 @@ private fun editRecordDialog(
         val endedAt =
             parseDateTime(endedField.text)
 
+        val activityId = activities[activityBox.selectedIndex].id
+        val tags = selectDesktopRecordTagsDialog(
+            tags = database.selectableTagsForActivity(activityId),
+            selected = if (activityId == record.activityId) {
+                record.tags.map { DesktopRecordTag(it.tagId, it.numericValue) }
+            } else {
+                emptyList()
+            },
+        ) ?: return null
         RecordEditResult(
-            activityId = activities[activityBox.selectedIndex].id,
+            activityId = activityId,
             startedAt = startedAt,
             endedAt = endedAt,
             comment = commentField.text,
+            tags = tags,
         )
     } catch (_: Throwable) {
         JOptionPane.showMessageDialog(
@@ -313,6 +286,8 @@ private fun DayNavigation(
 @Composable
 private fun TrackerV2(
     database: DesktopDatabase,
+    activityEditorService: DesktopActivityEditorService,
+    tagCategoryService: DesktopTagCategoryService,
     quickActions: DesktopQuickActions,
     activities: List<ActivityRow>,
     todayRecords: List<DayRecordRow>,
@@ -489,6 +464,24 @@ private fun TrackerV2(
             ) {
                 Text("Добавить")
             }
+
+            Spacer(Modifier.width(8.dp))
+
+            TextButton(
+                onClick = {
+                    if (manageDesktopTagsDialog(tagCategoryService)) onChanged()
+                },
+            ) {
+                Text("Теги")
+            }
+
+            TextButton(
+                onClick = {
+                    if (manageDesktopCategoriesDialog(tagCategoryService)) onChanged()
+                },
+            ) {
+                Text("Категории")
+            }
         }
 
         Spacer(Modifier.height(18.dp))
@@ -634,13 +627,24 @@ private fun TrackerV2(
 
                             TextButton(
                                 onClick = {
-                                    editActivityDialog(activity)?.let { edited ->
-                                        database.updateActivity(
-                                            activity.id,
-                                            edited.name,
-                                            edited.defaultDurationSeconds,
-                                        )
-                                        onChanged()
+                                    editDesktopActivityDialog(
+                                        activity = activity,
+                                        categories = tagCategoryService.categories(),
+                                        tags = tagCategoryService.tags(),
+                                        selectedCategoryIds = database.categoryIdsForActivity(activity.id),
+                                        selectedAllowedTagIds = database.allowedTagIdsForActivity(activity.id),
+                                        selectedDefaultTagIds = database.defaultTagIdsForActivity(activity.id),
+                                    )?.let { edited ->
+                                        when (activityEditorService.update(activity.id, edited)) {
+                                            DesktopTaxonomyWriteResult.SAVED -> onChanged()
+                                            DesktopTaxonomyWriteResult.INVALID_NAME ->
+                                                JOptionPane.showMessageDialog(null, "Укажите название и неотрицательную длительность")
+                                            DesktopTaxonomyWriteResult.INVALID_RELATION ->
+                                                JOptionPane.showMessageDialog(null, "Выбранная связь недоступна")
+                                            DesktopTaxonomyWriteResult.NAME_CONFLICT,
+                                            DesktopTaxonomyWriteResult.NOT_FOUND,
+                                            -> JOptionPane.showMessageDialog(null, "Не удалось изменить активность")
+                                        }
                                     }
                                 },
                             ) {
@@ -713,6 +717,7 @@ private fun TrackerV2(
 
 @Composable
 private fun HistoryV2(
+    database: DesktopDatabase,
     recordService: DesktopRecordService,
     activities: List<ActivityRow>,
     records: List<DayRecordRow>,
@@ -743,6 +748,7 @@ private fun HistoryV2(
         Spacer(Modifier.height(14.dp))
 
         ManualRecordButton(
+            database = database,
             recordService = recordService,
             activities = activities,
             date = date,
@@ -812,6 +818,26 @@ private fun HistoryV2(
                                         record.comment,
                                     )
                                 }
+
+                                if (record.tags.isNotEmpty()) {
+                                    Text(
+                                        record.tags.joinToString(" · ") { tag ->
+                                            buildString {
+                                                append(tag.name)
+                                                tag.numericValue?.let { value ->
+                                                    append(" (")
+                                                    append(formatDesktopTagValue(value))
+                                                    if (tag.valueSuffix.isNotBlank()) {
+                                                        append(' ')
+                                                        append(tag.valueSuffix)
+                                                    }
+                                                    append(')')
+                                                }
+                                            }
+                                        },
+                                        style = MaterialTheme.typography.caption,
+                                    )
+                                }
                             }
 
                             Text(
@@ -836,6 +862,7 @@ private fun HistoryV2(
                                         editRecordDialog(
                                             record,
                                             activities,
+                                            database,
                                         )
 
                                     if (
@@ -848,11 +875,16 @@ private fun HistoryV2(
                                                 startedAt = edited.startedAt,
                                                 endedAt = edited.endedAt,
                                                 comment = edited.comment,
+                                                tags = edited.tags,
                                             ),
                                         )) {
                                             RecordWriteResult.SAVED -> onChanged()
                                             RecordWriteResult.ACTIVITY_UNAVAILABLE ->
                                                 JOptionPane.showMessageDialog(null, "Активность недоступна")
+                                            RecordWriteResult.TAG_UNAVAILABLE ->
+                                                JOptionPane.showMessageDialog(null, "Тег недоступен")
+                                            RecordWriteResult.INVALID_TAG_VALUE ->
+                                                JOptionPane.showMessageDialog(null, "Некорректное значение тега")
                                             RecordWriteResult.RECORD_MISSING ->
                                                 JOptionPane.showMessageDialog(null, "Запись не найдена")
                                         }
@@ -880,6 +912,9 @@ private fun HistoryV2(
                                         when (recordService.delete(record.id)) {
                                             RecordWriteResult.SAVED -> onChanged()
                                             RecordWriteResult.ACTIVITY_UNAVAILABLE -> Unit
+                                            RecordWriteResult.TAG_UNAVAILABLE,
+                                            RecordWriteResult.INVALID_TAG_VALUE,
+                                            -> Unit
                                             RecordWriteResult.RECORD_MISSING ->
                                                 JOptionPane.showMessageDialog(null, "Запись не найдена")
                                         }
@@ -1115,6 +1150,8 @@ private fun ArchiveV2(
 fun DesktopAppV2(
     database: DesktopDatabase,
     recordService: DesktopRecordService,
+    activityEditorService: DesktopActivityEditorService,
+    tagCategoryService: DesktopTagCategoryService,
     quickActions: DesktopQuickActions,
     revision: Int,
     onDataChanged: () -> Unit,
@@ -1250,6 +1287,8 @@ fun DesktopAppV2(
                             TrackerV2(
                                 database =
                                     database,
+                                activityEditorService = activityEditorService,
+                                tagCategoryService = tagCategoryService,
                                 quickActions =
                                     quickActions,
                                 activities =
@@ -1268,6 +1307,7 @@ fun DesktopAppV2(
 
                                 DesktopTab.HISTORY ->
                             HistoryV2(
+                                database = database,
                                 recordService = recordService,
                                 activities =
                                     activities,

@@ -431,12 +431,15 @@ fun DesktopApp(
 }
 
 fun main() = application {
+    configureDesktopPopupUi()
     val database = remember { DesktopDatabase() }
     val semanticPreferences = remember { FileDesktopSemanticPreferences() }
     val timerService = remember {
         DesktopTimerService(database, semanticPreferences)
     }
     val recordService = remember { DesktopRecordService(database) }
+    val tagCategoryService = remember { DesktopTagCategoryService(database) }
+    val activityEditorService = remember { DesktopActivityEditorService(database) }
     val quickActions = remember {
         DesktopQuickActions(database, timerService, DesktopPinnedActivitiesStore())
     }
@@ -514,6 +517,8 @@ fun main() = application {
         DesktopAppV2(
             database = database,
             recordService = recordService,
+            activityEditorService = activityEditorService,
+            tagCategoryService = tagCategoryService,
             quickActions = quickActions,
             revision = revision,
             onDataChanged = quickActions::refresh,
