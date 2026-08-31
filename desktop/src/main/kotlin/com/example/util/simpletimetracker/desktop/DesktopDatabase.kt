@@ -26,7 +26,8 @@ data class HistoryRow(
 
 class DesktopDatabase(
     databasePath: Path? = null,
-) : DesktopTimerRepository {
+) : DesktopTimerRepository,
+    DesktopRecordRepository {
 
     val path: Path
 
@@ -253,6 +254,58 @@ class DesktopDatabase(
             } catch (error: Throwable) {
                 db.rollback()
                 throw error
+            }
+        }
+    }
+
+    override fun updateCompletedRecord(
+        recordId: Long,
+        activityId: Long,
+        startedAt: Long,
+        endedAt: Long,
+        comment: String,
+    ): Boolean {
+        connection().use { db ->
+            db.autoCommit = false
+            try {
+                val available = db.prepareStatement(
+                    "SELECT COUNT(*) FROM recordTypes WHERE id = ? AND hidden = 0",
+                ).use { query ->
+                    query.setLong(1, activityId)
+                    query.executeQuery().use { result -> result.next() && result.getInt(1) == 1 }
+                }
+                if (!available) {
+                    db.rollback()
+                    return false
+                }
+                val updated = db.prepareStatement(
+                    """
+                    UPDATE records
+                    SET type_id = ?, time_started = ?, time_ended = ?, comment = ?
+                    WHERE id = ?
+                    """.trimIndent(),
+                ).use { update ->
+                    update.setLong(1, activityId)
+                    update.setLong(2, startedAt)
+                    update.setLong(3, endedAt.coerceAtLeast(startedAt))
+                    update.setString(4, comment)
+                    update.setLong(5, recordId)
+                    update.executeUpdate() == 1
+                }
+                db.commit()
+                return updated
+            } catch (error: Throwable) {
+                db.rollback()
+                throw error
+            }
+        }
+    }
+
+    override fun deleteCompletedRecord(recordId: Long): Boolean {
+        return connection().use { db ->
+            db.prepareStatement("DELETE FROM records WHERE id = ?").use { delete ->
+                delete.setLong(1, recordId)
+                delete.executeUpdate() == 1
             }
         }
     }

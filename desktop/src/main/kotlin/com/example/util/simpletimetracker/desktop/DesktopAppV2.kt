@@ -45,6 +45,7 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import javax.swing.JLabel
+import javax.swing.JComboBox
 import javax.swing.JOptionPane
 import javax.swing.JPanel
 import javax.swing.JTextField
@@ -152,14 +153,49 @@ private fun overlap(
 }
 
 private data class RecordEditResult(
+    val activityId: Long,
     val startedAt: Long,
     val endedAt: Long,
     val comment: String,
 )
 
+private data class ActivityEditResult(
+    val name: String,
+    val defaultDurationSeconds: Long,
+)
+
+private fun editActivityDialog(activity: ActivityRow): ActivityEditResult? {
+    val nameField = JTextField(activity.name)
+    val durationField = JTextField(activity.defaultDurationSeconds.toString())
+    val panel = JPanel(GridLayout(0, 1, 4, 4))
+    panel.add(JLabel("Название"))
+    panel.add(nameField)
+    panel.add(JLabel("Длительность мгновенной записи в секундах (0 — обычный таймер)"))
+    panel.add(durationField)
+    if (JOptionPane.showConfirmDialog(
+            null,
+            panel,
+            "Изменить активность",
+            JOptionPane.OK_CANCEL_OPTION,
+            JOptionPane.PLAIN_MESSAGE,
+        ) != JOptionPane.OK_OPTION
+    ) return null
+    val duration = durationField.text.trim().toLongOrNull()
+    return if (nameField.text.isBlank() || duration == null || duration < 0) {
+        JOptionPane.showMessageDialog(null, "Укажите название и неотрицательную длительность")
+        null
+    } else {
+        ActivityEditResult(nameField.text, duration)
+    }
+}
+
 private fun editRecordDialog(
     record: DayRecordRow,
+    activities: List<ActivityRow>,
 ): RecordEditResult? {
+    if (activities.isEmpty()) return null
+    val activityBox = JComboBox(activities.map(ActivityRow::name).toTypedArray())
+    activityBox.selectedIndex = activities.indexOfFirst { it.id == record.activityId }.coerceAtLeast(0)
     val startedField =
         JTextField(dateTimeText(record.startedAt))
 
@@ -171,6 +207,9 @@ private fun editRecordDialog(
 
     val panel =
         JPanel(GridLayout(0, 1, 4, 4))
+
+    panel.add(JLabel("Активность"))
+    panel.add(activityBox)
 
     panel.add(JLabel("Начало"))
     panel.add(startedField)
@@ -201,19 +240,12 @@ private fun editRecordDialog(
         val endedAt =
             parseDateTime(endedField.text)
 
-        if (endedAt <= startedAt) {
-            JOptionPane.showMessageDialog(
-                null,
-                "Конец должен быть позже начала",
-            )
-            null
-        } else {
-            RecordEditResult(
-                startedAt = startedAt,
-                endedAt = endedAt,
-                comment = commentField.text,
-            )
-        }
+        RecordEditResult(
+            activityId = activities[activityBox.selectedIndex].id,
+            startedAt = startedAt,
+            endedAt = endedAt,
+            comment = commentField.text,
+        )
     } catch (_: Throwable) {
         JOptionPane.showMessageDialog(
             null,
@@ -602,44 +634,17 @@ private fun TrackerV2(
 
                             TextButton(
                                 onClick = {
-                                    val name =
-                                        JOptionPane
-                                            .showInputDialog(
-                                                null,
-                                                "Новое название",
-                                                activity.name,
-                                            )
-
-                                    if (
-                                        !name.isNullOrBlank()
-                                    ) {
-                                        database
-                                            .renameActivity(
-                                                activity.id,
-                                                name,
-                                            )
+                                    editActivityDialog(activity)?.let { edited ->
+                                        database.updateActivity(
+                                            activity.id,
+                                            edited.name,
+                                            edited.defaultDurationSeconds,
+                                        )
                                         onChanged()
                                     }
                                 },
                             ) {
                                 Text("Изм.")
-                            }
-
-                            TextButton(
-                                onClick = {
-                                    val value = JOptionPane.showInputDialog(
-                                        null,
-                                        "Длительность мгновенной записи в секундах (0 — обычный таймер)",
-                                        activity.defaultDurationSeconds.toString(),
-                                    )?.trim()?.toLongOrNull()
-                                    if (value != null && value >= 0) {
-                                        database.setActivityDefaultDuration(activity.id, value)
-                                        onChanged()
-                                    }
-                                },
-                                enabled = activity.startedAt == null,
-                            ) {
-                                Text("Длит.")
                             }
 
                             TextButton(
@@ -708,7 +713,7 @@ private fun TrackerV2(
 
 @Composable
 private fun HistoryV2(
-    database: DesktopDatabase,
+    recordService: DesktopRecordService,
     activities: List<ActivityRow>,
     records: List<DayRecordRow>,
     date: LocalDate,
@@ -738,7 +743,7 @@ private fun HistoryV2(
         Spacer(Modifier.height(14.dp))
 
         ManualRecordButton(
-            database = database,
+            recordService = recordService,
             activities = activities,
             date = date,
             onChanged = onChanged,
@@ -830,23 +835,27 @@ private fun HistoryV2(
                                     val edited =
                                         editRecordDialog(
                                             record,
+                                            activities,
                                         )
 
                                     if (
                                         edited != null
                                     ) {
-                                        database
-                                            .updateRecord(
-                                                recordId =
-                                                    record.id,
-                                                startedAt =
-                                                    edited.startedAt,
-                                                endedAt =
-                                                    edited.endedAt,
-                                                comment =
-                                                    edited.comment,
-                                            )
-                                        onChanged()
+                                        when (recordService.update(
+                                            record.id,
+                                            DesktopRecordDraft(
+                                                activityId = edited.activityId,
+                                                startedAt = edited.startedAt,
+                                                endedAt = edited.endedAt,
+                                                comment = edited.comment,
+                                            ),
+                                        )) {
+                                            RecordWriteResult.SAVED -> onChanged()
+                                            RecordWriteResult.ACTIVITY_UNAVAILABLE ->
+                                                JOptionPane.showMessageDialog(null, "Активность недоступна")
+                                            RecordWriteResult.RECORD_MISSING ->
+                                                JOptionPane.showMessageDialog(null, "Запись не найдена")
+                                        }
                                     }
                                 },
                             ) {
@@ -868,11 +877,12 @@ private fun HistoryV2(
                                         answer ==
                                         JOptionPane.YES_OPTION
                                     ) {
-                                        database
-                                            .deleteRecord(
-                                                record.id,
-                                            )
-                                        onChanged()
+                                        when (recordService.delete(record.id)) {
+                                            RecordWriteResult.SAVED -> onChanged()
+                                            RecordWriteResult.ACTIVITY_UNAVAILABLE -> Unit
+                                            RecordWriteResult.RECORD_MISSING ->
+                                                JOptionPane.showMessageDialog(null, "Запись не найдена")
+                                        }
                                     }
                                 },
                             ) {
@@ -1104,6 +1114,7 @@ private fun ArchiveV2(
 @Composable
 fun DesktopAppV2(
     database: DesktopDatabase,
+    recordService: DesktopRecordService,
     quickActions: DesktopQuickActions,
     revision: Int,
     onDataChanged: () -> Unit,
@@ -1257,8 +1268,7 @@ fun DesktopAppV2(
 
                                 DesktopTab.HISTORY ->
                             HistoryV2(
-                                database =
-                                    database,
+                                recordService = recordService,
                                 activities =
                                     activities,
                                 records =

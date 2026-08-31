@@ -436,6 +436,7 @@ fun main() = application {
     val timerService = remember {
         DesktopTimerService(database, semanticPreferences)
     }
+    val recordService = remember { DesktopRecordService(database) }
     val quickActions = remember {
         DesktopQuickActions(database, timerService, DesktopPinnedActivitiesStore())
     }
@@ -512,6 +513,7 @@ fun main() = application {
     ) {
         DesktopAppV2(
             database = database,
+            recordService = recordService,
             quickActions = quickActions,
             revision = revision,
             onDataChanged = quickActions::refresh,

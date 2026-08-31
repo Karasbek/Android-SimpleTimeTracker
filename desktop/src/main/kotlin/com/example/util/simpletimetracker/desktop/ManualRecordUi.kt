@@ -123,20 +123,12 @@ private fun showManualRecordDialog(
         val endedAt =
             manualDateTimeParse(endedField.text)
 
-        if (endedAt <= startedAt) {
-            JOptionPane.showMessageDialog(
-                null,
-                "Конец должен быть позже начала",
-            )
-            null
-        } else {
-            ManualRecordResult(
-                activityId = activities[selectedIndex].id,
-                startedAt = startedAt,
-                endedAt = endedAt,
-                comment = commentField.text,
-            )
-        }
+        ManualRecordResult(
+            activityId = activities[selectedIndex].id,
+            startedAt = startedAt,
+            endedAt = endedAt,
+            comment = commentField.text,
+        )
     } catch (_: Throwable) {
         JOptionPane.showMessageDialog(
             null,
@@ -148,7 +140,7 @@ private fun showManualRecordDialog(
 
 @Composable
 fun ManualRecordButton(
-    database: DesktopDatabase,
+    recordService: DesktopRecordService,
     activities: List<ActivityRow>,
     date: LocalDate,
     onChanged: () -> Unit,
@@ -162,13 +154,19 @@ fun ManualRecordButton(
 
             if (record != null) {
                 try {
-                    database.addManualRecord(
-                        activityId = record.activityId,
-                        startedAt = record.startedAt,
-                        endedAt = record.endedAt,
-                        comment = record.comment,
-                    )
-                    onChanged()
+                    when (recordService.create(
+                        DesktopRecordDraft(
+                            activityId = record.activityId,
+                            startedAt = record.startedAt,
+                            endedAt = record.endedAt,
+                            comment = record.comment,
+                        ),
+                    )) {
+                        RecordWriteResult.SAVED -> onChanged()
+                        RecordWriteResult.ACTIVITY_UNAVAILABLE ->
+                            JOptionPane.showMessageDialog(null, "Активность недоступна")
+                        RecordWriteResult.RECORD_MISSING -> Unit
+                    }
                 } catch (e: Throwable) {
                     JOptionPane.showMessageDialog(
                         null,

@@ -3,7 +3,7 @@ package com.example.util.simpletimetracker.desktop
 import java.sql.Connection
 
 internal object DesktopDatabaseSchema {
-    const val CURRENT_VERSION = 3
+    const val CURRENT_VERSION = 4
     private const val LEGACY_VERSION = 1
 
     fun initialize(connection: Connection) {
@@ -36,6 +36,7 @@ internal object DesktopDatabaseSchema {
             when (version) {
                 1 -> migrate1To2(connection)
                 2 -> migrate2To3(connection)
+                3 -> migrate3To4(connection)
                 else -> error("Missing desktop database migration from version $version")
             }
             version++
@@ -60,6 +61,14 @@ internal object DesktopDatabaseSchema {
             )
             statement.execute(
                 "UPDATE recordTypes SET default_duration = instantDuration WHERE instantDuration > 0",
+            )
+        }
+    }
+
+    private fun migrate3To4(connection: Connection) {
+        connection.createStatement().use { statement ->
+            statement.execute(
+                "CREATE INDEX IF NOT EXISTS index_records_type_started ON records(type_id, time_started)",
             )
         }
     }
@@ -123,6 +132,9 @@ internal object DesktopDatabaseSchema {
             )
             statement.execute(
                 "CREATE INDEX IF NOT EXISTS index_records_ended ON records(time_ended)",
+            )
+            statement.execute(
+                "CREATE INDEX IF NOT EXISTS index_records_type_started ON records(type_id, time_started)",
             )
         }
     }

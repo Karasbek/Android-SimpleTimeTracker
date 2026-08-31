@@ -14,6 +14,7 @@ class DesktopDatabaseMigrationTest {
 
         assertEquals(DesktopDatabaseSchema.CURRENT_VERSION, userVersion(database.path))
         assertTrue(tableNames(database.path).containsAll(EXPECTED_TABLES))
+        assertTrue(indexNames(database.path).contains("index_records_type_started"))
     }
 
     @Test
@@ -70,6 +71,35 @@ class DesktopDatabaseMigrationTest {
         assertEquals(1, rowCount(path, "records"))
     }
 
+    @Test
+    fun version3MigratesToVersion4WithoutChangingRecordsOrActivities() {
+        val path = temporaryPath()
+        createLegacyDatabase(path, version = 2)
+        connection(path) { db ->
+            db.createStatement().use { statement ->
+                statement.execute(
+                    "ALTER TABLE recordTypes ADD COLUMN default_duration INTEGER NOT NULL DEFAULT 0",
+                )
+                statement.execute("UPDATE recordTypes SET default_duration = 45")
+                statement.execute("UPDATE records SET comment = ''")
+                statement.execute("PRAGMA user_version = 3")
+            }
+        }
+
+        val database = DesktopDatabase(path)
+
+        assertEquals(DesktopDatabaseSchema.CURRENT_VERSION, userVersion(path))
+        assertEquals(45L, database.activities().single().defaultDurationSeconds)
+        assertEquals(1, database.runningRecords().size)
+        assertEquals(1, rowCount(path, "records"))
+        assertEquals("", textValue(path, "SELECT comment FROM records WHERE id = 2"))
+        assertTrue(indexNames(path).contains("index_records_type_started"))
+
+        val reopened = DesktopDatabase(path)
+        assertEquals(listOf("Running"), reopened.activities().map(ActivityRow::name))
+        assertEquals("", textValue(path, "SELECT comment FROM records WHERE id = 2"))
+    }
+
     private fun createLegacyDatabase(path: Path, version: Int, instantDuration: Long = 0) {
         Class.forName("org.sqlite.JDBC")
         DriverManager.getConnection("jdbc:sqlite:$path").use { db ->
@@ -120,6 +150,14 @@ class DesktopDatabaseMigrationTest {
         }
     }
 
+    private fun indexNames(path: Path): Set<String> = connection(path) { db ->
+        db.prepareStatement("SELECT name FROM sqlite_master WHERE type = 'index'").use { query ->
+            query.executeQuery().use { result ->
+                buildSet { while (result.next()) add(result.getString(1)) }
+            }
+        }
+    }
+
     private fun rowCount(path: Path, table: String): Int = connection(path) { db ->
         db.createStatement().use { statement ->
             statement.executeQuery("SELECT COUNT(*) FROM $table").use { result ->
@@ -134,6 +172,15 @@ class DesktopDatabaseMigrationTest {
             statement.executeQuery(query).use { result ->
                 result.next()
                 result.getLong(1)
+            }
+        }
+    }
+
+    private fun textValue(path: Path, query: String): String = connection(path) { db ->
+        db.createStatement().use { statement ->
+            statement.executeQuery(query).use { result ->
+                result.next()
+                result.getString(1)
             }
         }
     }
