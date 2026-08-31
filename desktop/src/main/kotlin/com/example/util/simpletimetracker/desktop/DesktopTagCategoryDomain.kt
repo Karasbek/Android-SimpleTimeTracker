@@ -29,6 +29,9 @@ data class DesktopRecordTagView(
 data class DesktopCategory(
     val id: Long,
     val name: String,
+    val colorId: Int = 0,
+    val colorInt: String = "",
+    val note: String = "",
 )
 
 data class DesktopTagDraft(
@@ -39,6 +42,9 @@ data class DesktopTagDraft(
 
 data class DesktopCategoryDraft(
     val name: String,
+    val colorId: Int = 0,
+    val colorInt: String = "",
+    val note: String = "",
 )
 
 data class DesktopActivityDetailsDraft(
@@ -47,6 +53,10 @@ data class DesktopActivityDetailsDraft(
     val categoryIds: Set<Long>,
     val allowedTagIds: Set<Long>,
     val defaultTagIds: Set<Long>,
+    val icon: String = "",
+    val colorId: Int = 0,
+    val colorInt: String = "",
+    val note: String = "",
 )
 
 interface DesktopTagCategoryRepository {
@@ -108,7 +118,7 @@ class DesktopTagCategoryService(
         if (repository.categories().any { it.id != categoryId && it.name == normalized.name }) {
             return DesktopTaxonomyWriteResult.NAME_CONFLICT to null
         }
-        return DesktopTaxonomyWriteResult.SAVED to repository.saveCategory(categoryId, normalized)
+        return DesktopTaxonomyWriteResult.SAVED to repository.saveCategory(categoryId, draft)
     }
 
     fun deleteCategory(categoryId: Long): DesktopTaxonomyWriteResult =
@@ -120,19 +130,18 @@ class DesktopActivityEditorService(
     private val repository: DesktopTagCategoryRepository,
 ) {
     fun update(activityId: Long, draft: DesktopActivityDetailsDraft): DesktopTaxonomyWriteResult {
-        val normalized = draft.copy(name = draft.name.trim())
-        if (normalized.name.isEmpty() || normalized.defaultDurationSeconds < 0) {
+        if (draft.name.isEmpty() || draft.defaultDurationSeconds < 0) {
             return DesktopTaxonomyWriteResult.INVALID_NAME
         }
-        if (repository.categories().map(DesktopCategory::id).containsAll(normalized.categoryIds).not()) {
+        if (repository.categories().map(DesktopCategory::id).containsAll(draft.categoryIds).not()) {
             return DesktopTaxonomyWriteResult.INVALID_RELATION
         }
         val tags = repository.tags().associateBy(DesktopTag::id)
-        val tagIds = normalized.allowedTagIds + normalized.defaultTagIds
+        val tagIds = draft.allowedTagIds + draft.defaultTagIds
         if (tagIds.any { tags[it]?.archived != false }) {
             return DesktopTaxonomyWriteResult.INVALID_RELATION
         }
-        return if (repository.updateActivityDetails(activityId, normalized)) {
+        return if (repository.updateActivityDetails(activityId, draft)) {
             DesktopTaxonomyWriteResult.SAVED
         } else {
             DesktopTaxonomyWriteResult.NOT_FOUND

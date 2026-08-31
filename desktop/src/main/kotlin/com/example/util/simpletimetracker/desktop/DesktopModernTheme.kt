@@ -123,14 +123,14 @@ internal fun DesktopSectionTitle(title: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-internal fun DesktopTagChip(text: String, muted: Boolean = false) {
+internal fun DesktopTagChip(text: String, muted: Boolean = false, background: Color? = null) {
     Text(
         text = text,
         style = MaterialTheme.typography.caption,
         color = if (muted) DesktopUiTokens.SecondaryText else DesktopUiTokens.TagText,
         modifier = Modifier
             .clip(RoundedCornerShape(50))
-            .background(if (muted) DesktopUiTokens.Divider else DesktopUiTokens.Tag)
+            .background(background ?: if (muted) DesktopUiTokens.Divider else DesktopUiTokens.Tag)
             .padding(horizontal = 9.dp, vertical = 5.dp),
     )
 }

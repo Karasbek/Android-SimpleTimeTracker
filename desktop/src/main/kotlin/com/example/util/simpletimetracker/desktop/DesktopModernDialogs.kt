@@ -53,6 +53,9 @@ internal fun ModernActivityEditorDialog(
     val existingDefaults = remember(activity?.id) { activity?.let { database.defaultTagIdsForActivity(it.id) } ?: emptySet() }
     var name by remember(activity?.id) { mutableStateOf(activity?.name.orEmpty()) }
     var duration by remember(activity?.id) { mutableStateOf(activity?.defaultDurationSeconds?.toString() ?: "0") }
+    var icon by remember(activity?.id) { mutableStateOf(activity?.icon.orEmpty()) }
+    var color by remember(activity?.id) { mutableStateOf(activity?.colorInt.orEmpty()) }
+    var note by remember(activity?.id) { mutableStateOf(activity?.note.orEmpty()) }
     var selectedCategories by remember(activity?.id) { mutableStateOf(existingCategories) }
     var selectedAllowed by remember(activity?.id) { mutableStateOf(existingAllowed) }
     var selectedDefaults by remember(activity?.id) { mutableStateOf(existingDefaults) }
@@ -64,6 +67,9 @@ internal fun ModernActivityEditorDialog(
         wide = true,
     ) {
         ModernField("Название", name, { name = it }, "Например, Работа")
+        ModernField("Значок", icon, { icon = it }, "Например, 🧠")
+        ModernField("Цвет", color, { color = it }, "#37474F")
+        ModernField("Заметка", note, { note = it }, "Необязательно", singleLine = false)
         ModernField("Длительность мгновенной записи, сек.", duration, { duration = it }, "0 — обычный таймер")
         ModernCheckGroup("Категории", categories.map { it.id to it.name }, selectedCategories) { selectedCategories = it }
         ModernCheckGroup("Доступные теги", tags.map { it.id to it.name }, selectedAllowed) { selectedAllowed = it }
@@ -96,6 +102,9 @@ internal fun ModernActivityEditorDialog(
                             categoryIds = selectedCategories,
                             allowedTagIds = selectedAllowed + selectedDefaults,
                             defaultTagIds = selectedDefaults,
+                            icon = icon,
+                            colorInt = color,
+                            note = note,
                         ),
                     )
                 ) {
@@ -312,6 +321,7 @@ internal fun ModernCategoriesManagerDialog(
                 Card(elevation = 0.dp, shape = MaterialTheme.shapes.small) {
                     Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(category.name, modifier = Modifier.weight(1f), style = MaterialTheme.typography.subtitle1)
+                        if (category.note.isNotBlank()) Text(category.note, style = MaterialTheme.typography.caption, color = DesktopUiTokens.SecondaryText)
                         TextButton(onClick = { editor = category }) { Text("Изм.") }
                         TextButton(onClick = { service.deleteCategory(category.id); revision++; onChanged() }) { Text("Удалить") }
                     }
@@ -325,9 +335,13 @@ internal fun ModernCategoriesManagerDialog(
 @Composable
 private fun ModernCategoryEditorDialog(category: DesktopCategory?, onDismiss: () -> Unit, onSaved: (DesktopCategoryDraft) -> Unit) {
     var name by remember(category?.id) { mutableStateOf(category?.name.orEmpty()) }
+    var color by remember(category?.id) { mutableStateOf(category?.colorInt.orEmpty()) }
+    var note by remember(category?.id) { mutableStateOf(category?.note.orEmpty()) }
     DesktopDialogSurface(if (category == null) "Новая категория" else "Изменить категорию", onDismiss) {
         ModernField("Название", name, { name = it })
-        DesktopDialogActions(onDismiss, "Сохранить", { onSaved(DesktopCategoryDraft(name)) }, name.isNotBlank())
+        ModernField("Цвет", color, { color = it }, "#37474F")
+        ModernField("Заметка", note, { note = it }, "Необязательно", singleLine = false)
+        DesktopDialogActions(onDismiss, "Сохранить", { onSaved(DesktopCategoryDraft(name, colorInt = color, note = note)) }, name.isNotEmpty())
     }
 }
 

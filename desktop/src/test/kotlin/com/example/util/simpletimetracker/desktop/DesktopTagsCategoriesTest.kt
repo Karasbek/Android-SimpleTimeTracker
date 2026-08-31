@@ -12,6 +12,38 @@ import kotlin.test.assertTrue
 
 class DesktopTagsCategoriesTest {
     @Test
+    fun activityAndCategoryIdentityPersistWithoutChangingRelations() {
+        val database = database()
+        database.addActivity(" Work ")
+        val activity = database.activities().single()
+        val categoryId = DesktopTagCategoryService(database).saveCategory(
+            draft = DesktopCategoryDraft("Projects", colorInt = "#336699", note = "visible group"),
+        ).second!!
+        val result = DesktopActivityEditorService(database).update(
+            activity.id,
+            DesktopActivityDetailsDraft(
+                name = " Work ",
+                defaultDurationSeconds = 0,
+                categoryIds = setOf(categoryId),
+                allowedTagIds = emptySet(),
+                defaultTagIds = emptySet(),
+                icon = "🧠",
+                colorInt = "#AA2244",
+                note = "identity note",
+            ),
+        )
+
+        assertEquals(DesktopTaxonomyWriteResult.SAVED, result)
+        val reopened = DesktopDatabase(database.path)
+        assertEquals(" Work ", reopened.activities().single().name)
+        assertEquals("🧠", reopened.activities().single().icon)
+        assertEquals("#AA2244", reopened.activities().single().colorInt)
+        assertEquals("identity note", reopened.activities().single().note)
+        assertEquals(DesktopCategory(categoryId, "Projects", 0, "#336699", "visible group"), reopened.categories().single())
+        assertEquals(setOf(categoryId), reopened.categoryIdsForActivity(activity.id))
+    }
+
+    @Test
     fun tagCreateRenameAndPersistenceFollowNameAndValueTypeSemantics() {
         val database = database()
         val service = DesktopTagCategoryService(database)

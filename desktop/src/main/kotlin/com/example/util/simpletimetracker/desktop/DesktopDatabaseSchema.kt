@@ -3,7 +3,7 @@ package com.example.util.simpletimetracker.desktop
 import java.sql.Connection
 
 internal object DesktopDatabaseSchema {
-    const val CURRENT_VERSION = 6
+    const val CURRENT_VERSION = 7
     private const val LEGACY_VERSION = 1
 
     fun initialize(connection: Connection) {
@@ -39,6 +39,7 @@ internal object DesktopDatabaseSchema {
                 3 -> migrate3To4(connection)
                 4 -> migrate4To5(connection)
                 5 -> migrate5To6(connection)
+                6 -> migrate6To7(connection)
                 else -> error("Missing desktop database migration from version $version")
             }
             version++
@@ -84,6 +85,21 @@ internal object DesktopDatabaseSchema {
         createSavedFilterTables(connection)
         createSavedFilterIndexes(connection)
     }
+
+    private fun migrate6To7(connection: Connection) {
+        connection.createStatement().use { statement ->
+            if (!hasColumn(connection, "categories", "color")) statement.execute("ALTER TABLE categories ADD COLUMN color INTEGER NOT NULL DEFAULT 0")
+            if (!hasColumn(connection, "categories", "color_int")) statement.execute("ALTER TABLE categories ADD COLUMN color_int TEXT NOT NULL DEFAULT ''")
+            if (!hasColumn(connection, "categories", "note")) statement.execute("ALTER TABLE categories ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+        }
+    }
+
+    private fun hasColumn(connection: Connection, table: String, column: String): Boolean =
+        connection.createStatement().use { statement ->
+            statement.executeQuery("PRAGMA table_info($table)").use { result ->
+                generateSequence { if (result.next()) result.getString("name") else null }.any { it == column }
+            }
+        }
 
     private fun createTables(connection: Connection) {
         connection.createStatement().use { statement ->
@@ -222,7 +238,10 @@ internal object DesktopDatabaseSchema {
                 """
                 CREATE TABLE IF NOT EXISTS categories (
                     id INTEGER PRIMARY KEY NOT NULL,
-                    name TEXT NOT NULL
+                    name TEXT NOT NULL,
+                    color INTEGER NOT NULL DEFAULT 0,
+                    color_int TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT ''
                 )
                 """.trimIndent(),
             )

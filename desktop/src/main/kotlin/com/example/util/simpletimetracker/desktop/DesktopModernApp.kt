@@ -87,6 +87,15 @@ private fun durationText(milliseconds: Long): String {
 private fun clockText(milliseconds: Long): String =
     DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(milliseconds))
 
+private fun identityColor(value: String, fallback: Color): Color =
+    runCatching {
+        value.takeIf { it.matches(Regex("#[0-9A-Fa-f]{6}")) }
+            ?.removePrefix("#")
+            ?.toLong(16)
+            ?.let { Color(0xFF000000L or it) }
+            ?: fallback
+    }.getOrDefault(fallback)
+
 @Composable
 fun DesktopModernApp(
     database: DesktopDatabase,
@@ -381,9 +390,8 @@ private fun ModernTrackerPage(
                         activity = activity,
                         duration = (completedByActivity[activity.id] ?: 0L) +
                             (activity.startedAt?.let { range.clippedDuration(it, now) } ?: 0L),
-                        categoryNames = tagCategoryService.categories()
-                            .filter { it.id in database.categoryIdsForActivity(activity.id) }
-                            .map(DesktopCategory::name),
+                        categories = tagCategoryService.categories()
+                            .filter { it.id in database.categoryIdsForActivity(activity.id) },
                         pinned = activity.id in quickActions.state.pinned.map(TrayActivity::id),
                         onToggle = { quickActions.toggle(activity.id) },
                         onEdit = { onEditActivity(activity) },
@@ -400,7 +408,7 @@ private fun ModernTrackerPage(
 private fun ModernActivityCard(
     activity: ActivityRow,
     duration: Long,
-    categoryNames: List<String>,
+    categories: List<DesktopCategory>,
     pinned: Boolean,
     onToggle: () -> Unit,
     onEdit: () -> Unit,
@@ -411,7 +419,7 @@ private fun ModernActivityCard(
     val running = activity.startedAt != null
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle),
-        backgroundColor = if (running) DesktopUiTokens.Running else DesktopUiTokens.Active,
+        backgroundColor = if (running) DesktopUiTokens.Running else identityColor(activity.colorInt, DesktopUiTokens.Active),
         contentColor = Color.White,
         elevation = if (running) 8.dp else 2.dp,
         shape = MaterialTheme.shapes.medium,
@@ -419,7 +427,7 @@ private fun ModernActivityCard(
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.Top) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(activity.name, style = MaterialTheme.typography.h6, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(listOf(activity.icon, activity.name).filter(String::isNotBlank).joinToString(" "), style = MaterialTheme.typography.h6, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text(
                         if (running) "● Запущено ${clockText(activity.startedAt!!)}" else "Нажмите, чтобы начать",
                         style = MaterialTheme.typography.body2,
@@ -437,9 +445,9 @@ private fun ModernActivityCard(
                     }
                 }
             }
-            if (categoryNames.isNotEmpty()) {
+            if (categories.isNotEmpty()) {
                 Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    categoryNames.forEach { DesktopTagChip(it) }
+                    categories.forEach { DesktopTagChip(it.name, background = identityColor(it.colorInt, DesktopUiTokens.Tag)) }
                 }
             }
             Text(durationText(duration), style = MaterialTheme.typography.h4, fontWeight = FontWeight.Bold)
@@ -530,14 +538,14 @@ private fun ModernRecordCard(
     var menuOpen by remember { mutableStateOf(false) }
     Card(
         modifier = Modifier.fillMaxWidth(),
-        backgroundColor = if (record.isRunning) DesktopUiTokens.Running else DesktopUiTokens.Active,
+        backgroundColor = if (record.isRunning) DesktopUiTokens.Running else identityColor(record.colorInt, DesktopUiTokens.Active),
         contentColor = Color.White,
         elevation = if (record.isRunning) 5.dp else 1.dp,
         shape = MaterialTheme.shapes.medium,
     ) {
         Row(modifier = Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                Text(record.activityName, style = MaterialTheme.typography.h6)
+                Text(listOf(record.icon, record.activityName).filter(String::isNotBlank).joinToString(" "), style = MaterialTheme.typography.h6)
                 Text(
                     if (record.isRunning) "${clockText(record.startedAt)} · запущено" else "${clockText(record.startedAt)} — ${clockText(record.endedAt)}",
                     style = MaterialTheme.typography.body2,
@@ -590,13 +598,19 @@ private fun ModernStatisticsPage(
     onSaveFilter: () -> Unit,
     onClearFilter: () -> Unit,
 ) {
-    val totals = records.groupBy(DesktopTimelineRecord::activityId).mapValues { (_, list) ->
-        list.first().activityName to list.sumOf { range.clippedDuration(it.startedAt, it.endedAt) }
-    }.values.sortedByDescending { it.second }
+    val totals = records.groupBy(DesktopTimelineRecord::activityId).map { (id, list) ->
+        ModernStatisticTotal(
+            id = id,
+            name = list.first().activityName,
+            icon = list.first().icon,
+            color = list.first().colorInt,
+            duration = list.sumOf { range.clippedDuration(it.startedAt, it.endedAt) },
+        )
+    }.sortedByDescending(ModernStatisticTotal::duration)
     Column(modifier = Modifier.fillMaxSize().padding(DesktopUiTokens.ScreenPadding)) {
         DesktopPageHeader(
             title = "Статистика",
-            subtitle = "${date.format(DateTimeFormatter.ofPattern("LLLL yyyy"))} · ${durationText(totals.sumOf { it.second })}",
+            subtitle = "${date.format(DateTimeFormatter.ofPattern("LLLL yyyy"))} · ${durationText(totals.sumOf(ModernStatisticTotal::duration))}",
             actions = {
                 OutlinedButton(onClick = { onDateChange(date.minusDays(1)) }) { Text("←") }
                 Spacer(Modifier.width(6.dp))
@@ -630,16 +644,16 @@ private fun ModernStatisticsPage(
             ModernEmptyState("За выбранный диапазон нет данных.")
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxSize()) {
-                items(totals, key = { it.first }) { item ->
-                    val share = item.second.toFloat() / totals.sumOf { it.second }.coerceAtLeast(1L)
+                items(totals, key = ModernStatisticTotal::id) { item ->
+                    val share = item.duration.toFloat() / totals.sumOf(ModernStatisticTotal::duration).coerceAtLeast(1L)
                     Card(elevation = 0.dp, shape = MaterialTheme.shapes.medium) {
                         Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                Text(item.first, modifier = Modifier.weight(1f), style = MaterialTheme.typography.h6)
-                                Text(durationText(item.second), style = MaterialTheme.typography.h6)
+                                Text(listOf(item.icon, item.name).filter(String::isNotBlank).joinToString(" "), modifier = Modifier.weight(1f), style = MaterialTheme.typography.h6)
+                                Text(durationText(item.duration), style = MaterialTheme.typography.h6)
                             }
                             Box(Modifier.fillMaxWidth().height(7.dp).background(DesktopUiTokens.Divider, RoundedCornerShape(8.dp))) {
-                                Box(Modifier.fillMaxWidth(share).height(7.dp).background(DesktopUiTokens.Primary, RoundedCornerShape(8.dp)))
+                                Box(Modifier.fillMaxWidth(share).height(7.dp).background(identityColor(item.color, DesktopUiTokens.Primary), RoundedCornerShape(8.dp)))
                             }
                         }
                     }
@@ -648,6 +662,8 @@ private fun ModernStatisticsPage(
         }
     }
 }
+
+private data class ModernStatisticTotal(val id: Long, val name: String, val icon: String, val color: String, val duration: Long)
 
 @Composable
 private fun ModernArchivePage(database: DesktopDatabase, activities: List<ActivityRow>, onChanged: () -> Unit) {

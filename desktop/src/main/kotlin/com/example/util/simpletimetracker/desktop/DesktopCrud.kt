@@ -89,7 +89,11 @@ fun DesktopDatabase.archivedActivities(): List<ActivityRow> {
                 rt.id,
                 rt.name,
                 rr.time_started,
-                rt.default_duration
+                rt.default_duration,
+                rt.icon,
+                rt.color,
+                rt.color_int,
+                rt.note
             FROM recordTypes rt
             LEFT JOIN runningRecords rr ON rr.id = rt.id
             WHERE rt.hidden = 1
@@ -112,6 +116,10 @@ fun DesktopDatabase.archivedActivities(): List<ActivityRow> {
                                 name = result.getString("name"),
                                 startedAt = startedAt,
                                 defaultDurationSeconds = result.getLong("default_duration"),
+                                icon = result.getString("icon"),
+                                colorId = result.getInt("color"),
+                                colorInt = result.getString("color_int"),
+                                note = result.getString("note"),
                             ),
                         )
                     }

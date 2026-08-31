@@ -29,6 +29,8 @@ data class DesktopTimelineRecord(
     val tags: List<DesktopRecordTagView>,
     val categoryIds: Set<Long>,
     val isRunning: Boolean,
+    val icon: String = "",
+    val colorInt: String = "",
 )
 
 data class DesktopSavedRecordFilter(
@@ -115,7 +117,7 @@ fun DesktopDatabase.completedTimelineRecords(range: DesktopTimeRange): List<Desk
     val rows = crudConnection().use { db ->
         db.prepareStatement(
             """
-            SELECT r.id, r.type_id, rt.name, r.time_started, r.time_ended, r.comment
+            SELECT r.id, r.type_id, rt.name, rt.icon, rt.color_int, r.time_started, r.time_ended, r.comment
             FROM records r
             JOIN recordTypes rt ON rt.id = r.type_id
             WHERE r.time_started < ? AND r.time_ended > ?
@@ -137,6 +139,8 @@ fun DesktopDatabase.completedTimelineRecords(range: DesktopTimeRange): List<Desk
                                 tags = emptyList(),
                                 categoryIds = emptySet(),
                                 isRunning = false,
+                                icon = result.getString("icon"),
+                                colorInt = result.getString("color_int"),
                             ),
                         )
                     }
@@ -154,7 +158,7 @@ fun DesktopDatabase.runningTimelineRecords(range: DesktopTimeRange, now: Long): 
     return crudConnection().use { db ->
         db.prepareStatement(
             """
-            SELECT rr.id, rt.name, rr.time_started, rr.comment
+            SELECT rr.id, rt.name, rt.icon, rt.color_int, rr.time_started, rr.comment
             FROM runningRecords rr
             JOIN recordTypes rt ON rt.id = rr.id
             WHERE rr.time_started < ?
@@ -178,6 +182,8 @@ fun DesktopDatabase.runningTimelineRecords(range: DesktopTimeRange, now: Long): 
                                     tags = runningRecordTagViews(id),
                                     categoryIds = categoryIdsForActivity(id),
                                     isRunning = true,
+                                    icon = result.getString("icon"),
+                                    colorInt = result.getString("color_int"),
                                 ),
                             )
                         }

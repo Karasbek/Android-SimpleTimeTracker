@@ -15,6 +15,10 @@ data class ActivityRow(
     val name: String,
     val startedAt: Long?,
     val defaultDurationSeconds: Long = 0,
+    val icon: String = "",
+    val colorId: Int = 0,
+    val colorInt: String = "",
+    val note: String = "",
 )
 
 data class HistoryRow(
@@ -104,8 +108,7 @@ class DesktopDatabase(
     }
 
     fun addActivity(name: String) {
-        val cleanName = name.trim()
-        if (cleanName.isEmpty()) return
+        if (name.isEmpty()) return
 
         connection().use { db ->
             db.autoCommit = false
@@ -120,7 +123,7 @@ class DesktopDatabase(
                     """.trimIndent(),
                 ).use { insert ->
                     insert.setLong(1, id)
-                    insert.setString(2, cleanName)
+                    insert.setString(2, name)
                     insert.setString(3, "")
                     insert.setInt(4, 0)
                     insert.setString(5, "")
@@ -147,7 +150,11 @@ class DesktopDatabase(
                     rt.id,
                     rt.name,
                     rr.time_started,
-                    rt.default_duration
+                    rt.default_duration,
+                    rt.icon,
+                    rt.color,
+                    rt.color_int,
+                    rt.note
                 FROM recordTypes rt
                 LEFT JOIN runningRecords rr ON rr.id = rt.id
                 WHERE rt.hidden = 0
@@ -165,6 +172,10 @@ class DesktopDatabase(
                                     name = result.getString("name"),
                                     startedAt = startedAt,
                                     defaultDurationSeconds = result.getLong("default_duration"),
+                                    icon = result.getString("icon"),
+                                    colorId = result.getInt("color"),
+                                    colorInt = result.getString("color_int"),
+                                    note = result.getString("note"),
                                 ),
                             )
                         }
@@ -542,11 +553,11 @@ class DesktopDatabase(
 
     override fun categories(): List<DesktopCategory> {
         return connection().use { db ->
-            db.prepareStatement("SELECT id, name FROM categories ORDER BY name COLLATE NOCASE, id").use { query ->
+                db.prepareStatement("SELECT id, name, color, color_int, note FROM categories ORDER BY name COLLATE NOCASE, id").use { query ->
                 query.executeQuery().use { result ->
                     buildList {
                         while (result.next()) {
-                            add(DesktopCategory(result.getLong("id"), result.getString("name")))
+                            add(DesktopCategory(result.getLong("id"), result.getString("name"), result.getInt("color"), result.getString("color_int"), result.getString("note")))
                         }
                     }
                 }
@@ -637,15 +648,21 @@ class DesktopDatabase(
             try {
                 val id = if (categoryId == 0L) nextId(db) else categoryId
                 val saved = if (categoryId == 0L) {
-                    db.prepareStatement("INSERT INTO categories(id, name) VALUES (?, ?)").use { insert ->
+                    db.prepareStatement("INSERT INTO categories(id, name, color, color_int, note) VALUES (?, ?, ?, ?, ?)").use { insert ->
                         insert.setLong(1, id)
                         insert.setString(2, draft.name)
+                        insert.setInt(3, draft.colorId)
+                        insert.setString(4, draft.colorInt)
+                        insert.setString(5, draft.note)
                         insert.executeUpdate() == 1
                     }
                 } else {
-                    db.prepareStatement("UPDATE categories SET name = ? WHERE id = ?").use { update ->
+                    db.prepareStatement("UPDATE categories SET name = ?, color = ?, color_int = ?, note = ? WHERE id = ?").use { update ->
                         update.setString(1, draft.name)
-                        update.setLong(2, id)
+                        update.setInt(2, draft.colorId)
+                        update.setString(3, draft.colorInt)
+                        update.setString(4, draft.note)
+                        update.setLong(5, id)
                         update.executeUpdate() == 1
                     }
                 }
@@ -703,11 +720,15 @@ class DesktopDatabase(
             db.autoCommit = false
             try {
                 val updated = db.prepareStatement(
-                    "UPDATE recordTypes SET name = ?, default_duration = ? WHERE id = ?",
+                    "UPDATE recordTypes SET name = ?, default_duration = ?, icon = ?, color = ?, color_int = ?, note = ? WHERE id = ?",
                 ).use { update ->
                     update.setString(1, draft.name)
                     update.setLong(2, draft.defaultDurationSeconds)
-                    update.setLong(3, activityId)
+                    update.setString(3, draft.icon)
+                    update.setInt(4, draft.colorId)
+                    update.setString(5, draft.colorInt)
+                    update.setString(6, draft.note)
+                    update.setLong(7, activityId)
                     update.executeUpdate() == 1
                 }
                 if (!updated) {
