@@ -431,7 +431,6 @@ fun DesktopApp(
 }
 
 fun main() = application {
-    configureDesktopPopupUi()
     val database = remember { DesktopDatabase() }
     val semanticPreferences = remember { FileDesktopSemanticPreferences() }
     val timerService = remember {
@@ -513,11 +512,14 @@ fun main() = application {
         visible = isWindowVisible,
         title = "Simple Time Tracker",
         state = WindowState(
-            width = 960.dp,
-            height = 720.dp,
+            width = 1180.dp,
+            height = 780.dp,
         ),
     ) {
-        DesktopAppV2(
+        LaunchedEffect(Unit) {
+            window.minimumSize = java.awt.Dimension(960, 720)
+        }
+        DesktopModernApp(
             database = database,
             recordService = recordService,
             activityEditorService = activityEditorService,
