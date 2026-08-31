@@ -395,6 +395,33 @@ private fun TrackerV2(
             Text("Разрешить несколько таймеров одновременно")
         }
 
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                if (quickActions.ignoreShortRecordsDurationSeconds == 0L) {
+                    "Короткие записи: сохранять"
+                } else {
+                    "Не сохранять записи ≤ ${quickActions.ignoreShortRecordsDurationSeconds} сек."
+                },
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(
+                onClick = {
+                    val value = JOptionPane.showInputDialog(
+                        null,
+                        "Порог в секундах (0 — сохранять все)",
+                        quickActions.ignoreShortRecordsDurationSeconds.toString(),
+                    )?.trim()?.toLongOrNull()
+                    if (value != null && value >= 0) {
+                        quickActions.setIgnoreShortRecordsDurationSeconds(value)
+                    }
+                },
+            ) {
+                Text("Изменить")
+            }
+        }
+
         Spacer(Modifier.height(12.dp))
 
         Row(
@@ -508,6 +535,13 @@ private fun TrackerV2(
                                 MaterialTheme.typography.caption,
                         )
 
+                        if (activity.defaultDurationSeconds > 0) {
+                            Text(
+                                "Мгновенная запись: ${durationText(activity.defaultDurationSeconds * 1000L)}",
+                                style = MaterialTheme.typography.caption,
+                            )
+                        }
+
                         Spacer(
                             Modifier.height(12.dp),
                         )
@@ -589,6 +623,23 @@ private fun TrackerV2(
                                 },
                             ) {
                                 Text("Изм.")
+                            }
+
+                            TextButton(
+                                onClick = {
+                                    val value = JOptionPane.showInputDialog(
+                                        null,
+                                        "Длительность мгновенной записи в секундах (0 — обычный таймер)",
+                                        activity.defaultDurationSeconds.toString(),
+                                    )?.trim()?.toLongOrNull()
+                                    if (value != null && value >= 0) {
+                                        database.setActivityDefaultDuration(activity.id, value)
+                                        onChanged()
+                                    }
+                                },
+                                enabled = activity.startedAt == null,
+                            ) {
+                                Text("Длит.")
                             }
 
                             TextButton(

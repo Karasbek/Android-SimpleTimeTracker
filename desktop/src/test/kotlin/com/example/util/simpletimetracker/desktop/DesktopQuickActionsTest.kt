@@ -111,12 +111,22 @@ class DesktopQuickActionsTest {
             return true
         }
 
+        override fun addCompletedRecord(
+            activityId: Long,
+            startedAt: Long,
+            endedAt: Long,
+            comment: String,
+            tagId: Long,
+        ): Boolean = rows.any { it.id == activityId }
+
         override fun completeRunningRecord(activityId: Long, endedAt: Long): Boolean {
             if (rows.none { it.id == activityId && it.startedAt != null }) return false
             completeCalls++
             rows = rows.map { if (it.id == activityId) it.copy(startedAt = null) else it }
             return true
         }
+
+        override fun discardRunningRecord(activityId: Long): Boolean = completeRunningRecord(activityId, 0)
 
         override fun previousCompletedActivityId(): Long? = previousId
     }

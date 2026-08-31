@@ -85,7 +85,8 @@ fun DesktopDatabase.archivedActivities(): List<ActivityRow> {
             SELECT
                 rt.id,
                 rt.name,
-                rr.time_started
+                rr.time_started,
+                rt.default_duration
             FROM recordTypes rt
             LEFT JOIN runningRecords rr ON rr.id = rt.id
             WHERE rt.hidden = 1
@@ -107,11 +108,28 @@ fun DesktopDatabase.archivedActivities(): List<ActivityRow> {
                                 id = result.getLong("id"),
                                 name = result.getString("name"),
                                 startedAt = startedAt,
+                                defaultDurationSeconds = result.getLong("default_duration"),
                             ),
                         )
                     }
                 }
             }
+        }
+    }
+}
+
+fun DesktopDatabase.setActivityDefaultDuration(
+    activityId: Long,
+    durationSeconds: Long,
+) {
+    require(durationSeconds >= 0) { "Длительность не может быть отрицательной" }
+    crudConnection().use { db ->
+        db.prepareStatement(
+            "UPDATE recordTypes SET default_duration = ? WHERE id = ?",
+        ).use { update ->
+            update.setLong(1, durationSeconds)
+            update.setLong(2, activityId)
+            check(update.executeUpdate() == 1) { "Активность не найдена" }
         }
     }
 }

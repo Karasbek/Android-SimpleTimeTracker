@@ -9,6 +9,7 @@ import java.util.Properties
 
 interface DesktopSemanticPreferences {
     var allowMultitasking: Boolean
+    var ignoreShortRecordsDurationSeconds: Long
 }
 
 class FileDesktopSemanticPreferences(
@@ -19,6 +20,16 @@ class FileDesktopSemanticPreferences(
         @Synchronized get() = loadBoolean(ALLOW_MULTITASKING, DEFAULT_ALLOW_MULTITASKING)
         @Synchronized set(value) = update(ALLOW_MULTITASKING, value.toString())
 
+    override var ignoreShortRecordsDurationSeconds: Long
+        @Synchronized get() = loadLong(
+            IGNORE_SHORT_RECORDS_DURATION_SECONDS,
+            DEFAULT_IGNORE_SHORT_RECORDS_DURATION_SECONDS,
+        )
+        @Synchronized set(value) = update(
+            IGNORE_SHORT_RECORDS_DURATION_SECONDS,
+            value.coerceAtLeast(0).toString(),
+        )
+
     private fun loadBoolean(key: String, default: Boolean): Boolean {
         val value = load().getProperty(key)?.trim()?.lowercase()
         return when (value) {
@@ -27,6 +38,9 @@ class FileDesktopSemanticPreferences(
             else -> default
         }
     }
+
+    private fun loadLong(key: String, default: Long): Long =
+        load().getProperty(key)?.trim()?.toLongOrNull()?.takeIf { it >= 0 } ?: default
 
     private fun update(key: String, value: String) {
         val properties = load().apply { setProperty(key, value) }
@@ -61,7 +75,9 @@ class FileDesktopSemanticPreferences(
 
     companion object {
         const val DEFAULT_ALLOW_MULTITASKING = true
+        const val DEFAULT_IGNORE_SHORT_RECORDS_DURATION_SECONDS = 0L
         private const val ALLOW_MULTITASKING = "allowMultitasking"
+        private const val IGNORE_SHORT_RECORDS_DURATION_SECONDS = "ignoreShortRecordsDurationSeconds"
     }
 }
 

@@ -91,9 +91,18 @@ class DesktopQuickActions(
     val allowMultitasking: Boolean
         get() = timerService.allowMultitasking
 
+    val ignoreShortRecordsDurationSeconds: Long
+        get() = timerService.ignoreShortRecordsDurationSeconds
+
     @Synchronized
     fun setAllowMultitasking(value: Boolean) {
         timerService.setAllowMultitasking(value)
+        publish(buildState())
+    }
+
+    @Synchronized
+    fun setIgnoreShortRecordsDurationSeconds(value: Long) {
+        timerService.setIgnoreShortRecordsDurationSeconds(value)
         publish(buildState())
     }
 
@@ -112,6 +121,7 @@ class DesktopQuickActions(
             ?: return RepeatPreviousResult.NO_PREVIOUS
         val result = when (timerService.start(activityId)) {
             TimerActionResult.STARTED -> RepeatPreviousResult.STARTED
+            TimerActionResult.COMPLETED -> RepeatPreviousResult.STARTED
             TimerActionResult.ALREADY_RUNNING -> RepeatPreviousResult.ALREADY_RUNNING
             TimerActionResult.ACTIVITY_UNAVAILABLE,
             TimerActionResult.NOT_RUNNING,

@@ -57,11 +57,23 @@ class DesktopTimerServiceTest {
             running[record.activityId] = record
             return true
         }
+        override fun addCompletedRecord(
+            activityId: Long,
+            startedAt: Long,
+            endedAt: Long,
+            comment: String,
+            tagId: Long,
+        ): Boolean {
+            if (active.none { it.id == activityId }) return false
+            completed += activityId to endedAt
+            return true
+        }
         override fun completeRunningRecord(activityId: Long, endedAt: Long): Boolean {
             if (running.remove(activityId) == null) return false
             completed += activityId to endedAt
             return true
         }
+        override fun discardRunningRecord(activityId: Long): Boolean = running.remove(activityId) != null
         override fun previousCompletedActivityId(): Long? = completed.lastOrNull()?.first
     }
 }

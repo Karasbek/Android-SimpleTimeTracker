@@ -3,7 +3,7 @@ package com.example.util.simpletimetracker.desktop
 import java.sql.Connection
 
 internal object DesktopDatabaseSchema {
-    const val CURRENT_VERSION = 2
+    const val CURRENT_VERSION = 3
     private const val LEGACY_VERSION = 1
 
     fun initialize(connection: Connection) {
@@ -35,6 +35,7 @@ internal object DesktopDatabaseSchema {
         while (version < CURRENT_VERSION) {
             when (version) {
                 1 -> migrate1To2(connection)
+                2 -> migrate2To3(connection)
                 else -> error("Missing desktop database migration from version $version")
             }
             version++
@@ -52,6 +53,17 @@ internal object DesktopDatabaseSchema {
         createIndexes(connection)
     }
 
+    private fun migrate2To3(connection: Connection) {
+        connection.createStatement().use { statement ->
+            statement.execute(
+                "ALTER TABLE recordTypes ADD COLUMN default_duration INTEGER NOT NULL DEFAULT 0",
+            )
+            statement.execute(
+                "UPDATE recordTypes SET default_duration = instantDuration WHERE instantDuration > 0",
+            )
+        }
+    }
+
     private fun createTables(connection: Connection) {
         connection.createStatement().use { statement ->
             statement.execute(
@@ -65,6 +77,7 @@ internal object DesktopDatabaseSchema {
                     hidden INTEGER NOT NULL,
                     instant INTEGER NOT NULL,
                     instantDuration INTEGER NOT NULL,
+                    default_duration INTEGER NOT NULL DEFAULT 0,
                     note TEXT NOT NULL
                 )
                 """.trimIndent(),

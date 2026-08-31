@@ -14,6 +14,7 @@ data class ActivityRow(
     val id: Long,
     val name: String,
     val startedAt: Long?,
+    val defaultDurationSeconds: Long = 0,
 )
 
 data class HistoryRow(
@@ -108,8 +109,8 @@ class DesktopDatabase(
                     """
                     INSERT INTO recordTypes(
                         id, name, icon, color, color_int, hidden,
-                        instant, instantDuration, note
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        instant, instantDuration, default_duration, note
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """.trimIndent(),
                 ).use { insert ->
                     insert.setLong(1, id)
@@ -120,7 +121,8 @@ class DesktopDatabase(
                     insert.setInt(6, 0)
                     insert.setInt(7, 0)
                     insert.setLong(8, 0)
-                    insert.setString(9, "")
+                    insert.setLong(9, 0)
+                    insert.setString(10, "")
                     insert.executeUpdate()
                 }
                 db.commit()
@@ -138,7 +140,8 @@ class DesktopDatabase(
                 SELECT
                     rt.id,
                     rt.name,
-                    rr.time_started
+                    rr.time_started,
+                    rt.default_duration
                 FROM recordTypes rt
                 LEFT JOIN runningRecords rr ON rr.id = rt.id
                 WHERE rt.hidden = 0
@@ -155,6 +158,7 @@ class DesktopDatabase(
                                     id = result.getLong("id"),
                                     name = result.getString("name"),
                                     startedAt = startedAt,
+                                    defaultDurationSeconds = result.getLong("default_duration"),
                                 ),
                             )
                         }
@@ -221,6 +225,38 @@ class DesktopDatabase(
         }
     }
 
+    override fun addCompletedRecord(
+        activityId: Long,
+        startedAt: Long,
+        endedAt: Long,
+        comment: String,
+        tagId: Long,
+    ): Boolean {
+        connection().use { db ->
+            db.autoCommit = false
+            try {
+                val available = db.prepareStatement(
+                    "SELECT COUNT(*) FROM recordTypes WHERE id = ? AND hidden = 0",
+                ).use { query ->
+                    query.setLong(1, activityId)
+                    query.executeQuery().use { result ->
+                        result.next() && result.getInt(1) == 1
+                    }
+                }
+                if (!available) {
+                    db.rollback()
+                    return false
+                }
+                insertCompletedRecord(db, activityId, startedAt, endedAt, comment, tagId)
+                db.commit()
+                return true
+            } catch (error: Throwable) {
+                db.rollback()
+                throw error
+            }
+        }
+    }
+
     override fun completeRunningRecord(activityId: Long, endedAt: Long): Boolean {
         connection().use { db ->
             db.autoCommit = false
@@ -245,20 +281,14 @@ class DesktopDatabase(
                     return false
                 }
                 val actualEndedAt = endedAt.coerceAtLeast(running.first)
-                db.prepareStatement(
-                    """
-                    INSERT INTO records(id, type_id, time_started, time_ended, comment, tag_id)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """.trimIndent(),
-                ).use { insert ->
-                    insert.setLong(1, nextId(db))
-                    insert.setLong(2, activityId)
-                    insert.setLong(3, running.first)
-                    insert.setLong(4, actualEndedAt)
-                    insert.setString(5, running.second)
-                    insert.setLong(6, running.third)
-                    insert.executeUpdate()
-                }
+                insertCompletedRecord(
+                    db,
+                    activityId,
+                    running.first,
+                    actualEndedAt,
+                    running.second,
+                    running.third,
+                )
                 db.prepareStatement("DELETE FROM runningRecords WHERE id = ?").use { delete ->
                     delete.setLong(1, activityId)
                     check(delete.executeUpdate() == 1)
@@ -272,6 +302,39 @@ class DesktopDatabase(
         }
     }
 
+    override fun discardRunningRecord(activityId: Long): Boolean {
+        return connection().use { db ->
+            db.prepareStatement("DELETE FROM runningRecords WHERE id = ?").use { delete ->
+                delete.setLong(1, activityId)
+                delete.executeUpdate() == 1
+            }
+        }
+    }
+
+    private fun insertCompletedRecord(
+        db: Connection,
+        activityId: Long,
+        startedAt: Long,
+        endedAt: Long,
+        comment: String,
+        tagId: Long,
+    ) {
+        db.prepareStatement(
+            """
+            INSERT INTO records(id, type_id, time_started, time_ended, comment, tag_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """.trimIndent(),
+        ).use { insert ->
+            insert.setLong(1, nextId(db))
+            insert.setLong(2, activityId)
+            insert.setLong(3, startedAt)
+            insert.setLong(4, endedAt.coerceAtLeast(startedAt))
+            insert.setString(5, comment)
+            insert.setLong(6, tagId)
+            insert.executeUpdate()
+        }
+    }
+
     override fun previousCompletedActivityId(): Long? {
         return connection().use { db ->
             db.prepareStatement(
@@ -279,7 +342,7 @@ class DesktopDatabase(
                 SELECT r.type_id
                 FROM records r
                 JOIN recordTypes rt ON rt.id = r.type_id
-                WHERE rt.hidden = 0 AND rt.instantDuration = 0
+                WHERE rt.hidden = 0 AND rt.default_duration = 0
                 ORDER BY r.time_ended DESC, r.id DESC
                 LIMIT 1
                 """.trimIndent(),

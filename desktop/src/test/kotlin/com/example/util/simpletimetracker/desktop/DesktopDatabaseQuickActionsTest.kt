@@ -61,12 +61,7 @@ class DesktopDatabaseQuickActionsTest {
 
         database.archiveActivity(ids.getValue("Two"))
         assertEquals(ids.getValue("One"), database.previousCompletedActivityId())
-        DriverManager.getConnection("jdbc:sqlite:${database.path}").use { connection ->
-            connection.prepareStatement("UPDATE recordTypes SET instantDuration = 60 WHERE id = ?").use {
-                it.setLong(1, ids.getValue("One"))
-                it.executeUpdate()
-            }
-        }
+        database.setActivityDefaultDuration(ids.getValue("One"), 60)
         assertNull(database.previousCompletedActivityId())
     }
 
@@ -77,6 +72,7 @@ class DesktopDatabaseQuickActionsTest {
 
 internal class MemoryPreferences(
     override var allowMultitasking: Boolean,
+    override var ignoreShortRecordsDurationSeconds: Long = 0,
 ) : DesktopSemanticPreferences
 
 internal fun clock(vararg timestamps: Long): () -> Long {

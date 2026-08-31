@@ -33,14 +33,16 @@ class DesktopDatabaseMigrationTest {
     @Test
     fun previousVersionMigratesSequentiallyWithoutDataLoss() {
         val path = temporaryPath()
-        createLegacyDatabase(path, version = 1)
+        createLegacyDatabase(path, version = 2)
 
         val database = DesktopDatabase(path)
 
         assertEquals(DesktopDatabaseSchema.CURRENT_VERSION, userVersion(path))
         assertEquals(listOf(ActivityRow(1, "Running", 100)), database.activities())
+        assertEquals(0L, database.activities().single().defaultDurationSeconds)
         assertEquals(1, database.runningRecords().size)
         assertEquals(1, rowCount(path, "records"))
+        assertEquals(0L, columnValue(path, "SELECT default_duration FROM recordTypes WHERE id = 1"))
     }
 
     @Test
@@ -55,7 +57,20 @@ class DesktopDatabaseMigrationTest {
         assertEquals(listOf("Persisted"), second.activities().map(ActivityRow::name))
     }
 
-    private fun createLegacyDatabase(path: Path, version: Int) {
+    @Test
+    fun migrationCopiesExistingInstantDurationIntoCanonicalDefaultDuration() {
+        val path = temporaryPath()
+        createLegacyDatabase(path, version = 2, instantDuration = 90)
+
+        val database = DesktopDatabase(path)
+
+        assertEquals(90L, database.activities().single().defaultDurationSeconds)
+        assertEquals(90L, columnValue(path, "SELECT default_duration FROM recordTypes WHERE id = 1"))
+        assertEquals(1, database.runningRecords().size)
+        assertEquals(1, rowCount(path, "records"))
+    }
+
+    private fun createLegacyDatabase(path: Path, version: Int, instantDuration: Long = 0) {
         Class.forName("org.sqlite.JDBC")
         DriverManager.getConnection("jdbc:sqlite:$path").use { db ->
             db.createStatement().use { statement ->
@@ -78,9 +93,7 @@ class DesktopDatabaseMigrationTest {
                     "CREATE TABLE desktop_id_allocator (id INTEGER PRIMARY KEY CHECK (id = 1), " +
                         "namespace INTEGER NOT NULL, next_counter INTEGER NOT NULL)",
                 )
-                statement.execute(
-                    "INSERT INTO recordTypes VALUES (1, 'Running', '', 0, '', 0, 0, 0, '')",
-                )
+                statement.execute("INSERT INTO recordTypes VALUES (1, 'Running', '', 0, '', 0, 0, $instantDuration, '')")
                 statement.execute("INSERT INTO runningRecords VALUES (1, 100, 'running note', 0)")
                 val now = System.currentTimeMillis()
                 statement.execute("INSERT INTO records VALUES (2, 1, ${now - 1000}, $now, 'done note', 0)")
@@ -112,6 +125,15 @@ class DesktopDatabaseMigrationTest {
             statement.executeQuery("SELECT COUNT(*) FROM $table").use { result ->
                 result.next()
                 result.getInt(1)
+            }
+        }
+    }
+
+    private fun columnValue(path: Path, query: String): Long = connection(path) { db ->
+        db.createStatement().use { statement ->
+            statement.executeQuery(query).use { result ->
+                result.next()
+                result.getLong(1)
             }
         }
     }
