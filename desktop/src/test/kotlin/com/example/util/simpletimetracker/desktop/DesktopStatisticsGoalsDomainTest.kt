@@ -23,7 +23,7 @@ class DesktopStatisticsGoalsDomainTest {
 
         val migrated = DesktopDatabase(database.path)
 
-        assertEquals(9, schemaVersion(database.path))
+        assertEquals(10, schemaVersion(database.path))
         assertEquals(listOf("Work"), migrated.activities().map(ActivityRow::name))
         assertEquals("kept", migrated.historyForDate(LocalDate.of(1970, 1, 1)).single().comment)
         assertTrue(migrated.goals().isEmpty())

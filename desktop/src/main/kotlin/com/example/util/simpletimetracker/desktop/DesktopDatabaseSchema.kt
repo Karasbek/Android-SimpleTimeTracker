@@ -3,7 +3,7 @@ package com.example.util.simpletimetracker.desktop
 import java.sql.Connection
 
 internal object DesktopDatabaseSchema {
-    const val CURRENT_VERSION = 9
+    const val CURRENT_VERSION = 10
     private const val LEGACY_VERSION = 1
 
     fun initialize(connection: Connection) {
@@ -42,6 +42,7 @@ internal object DesktopDatabaseSchema {
                 6 -> migrate6To7(connection)
                 7 -> migrate7To8(connection)
                 8 -> migrate8To9(connection)
+                9 -> migrate9To10(connection)
                 else -> error("Missing desktop database migration from version $version")
             }
             version++
@@ -141,6 +142,11 @@ internal object DesktopDatabaseSchema {
         createGoalsIndexes(connection)
     }
 
+    private fun migrate9To10(connection: Connection) {
+        createAutomationTables(connection)
+        createAutomationIndexes(connection)
+    }
+
     private fun hasColumn(connection: Connection, table: String, column: String): Boolean =
         connection.createStatement().use { statement ->
             statement.executeQuery("PRAGMA table_info($table)").use { result ->
@@ -202,6 +208,7 @@ internal object DesktopDatabaseSchema {
         createSavedFilterTables(connection)
         createAdvancedSavedFilterTables(connection)
         createGoalsTable(connection)
+        createAutomationTables(connection)
     }
 
     private fun createIndexes(connection: Connection) {
@@ -209,6 +216,7 @@ internal object DesktopDatabaseSchema {
         createTagCategoryIndexes(connection)
         createSavedFilterIndexes(connection)
         createGoalsIndexes(connection)
+        createAutomationIndexes(connection)
     }
 
     private fun createCoreIndexes(connection: Connection) {
@@ -403,6 +411,92 @@ internal object DesktopDatabaseSchema {
             statement.execute(
                 "CREATE INDEX IF NOT EXISTS index_record_type_goals_range ON record_type_goals(goal_range)",
             )
+        }
+    }
+
+    private fun createAutomationTables(connection: Connection) {
+        connection.createStatement().use { statement ->
+            statement.execute(
+                """
+                CREATE TABLE IF NOT EXISTS complex_rules (
+                    id INTEGER PRIMARY KEY NOT NULL,
+                    disabled INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1)),
+                    action TEXT NOT NULL CHECK (action IN ('ALLOW_MULTITASKING', 'DISALLOW_MULTITASKING', 'ASSIGN_TAG')),
+                    disallow_only_previous INTEGER NOT NULL DEFAULT 0 CHECK (disallow_only_previous IN (0, 1)),
+                    starting_activity_ids TEXT NOT NULL DEFAULT '',
+                    current_activity_ids TEXT NOT NULL DEFAULT '',
+                    days_of_week TEXT NOT NULL DEFAULT ''
+                )
+                """.trimIndent(),
+            )
+            statement.execute(
+                """
+                CREATE TABLE IF NOT EXISTS complex_rule_tags (
+                    rule_id INTEGER NOT NULL,
+                    tag_id INTEGER NOT NULL,
+                    numeric_value REAL,
+                    select_value_on_start INTEGER NOT NULL DEFAULT 0 CHECK (select_value_on_start IN (0, 1)),
+                    PRIMARY KEY (rule_id, tag_id),
+                    FOREIGN KEY (rule_id) REFERENCES complex_rules(id) ON DELETE RESTRICT
+                )
+                """.trimIndent(),
+            )
+            statement.execute(
+                """
+                CREATE TABLE IF NOT EXISTS activity_suggestions (
+                    id INTEGER PRIMARY KEY NOT NULL,
+                    activity_id INTEGER NOT NULL
+                )
+                """.trimIndent(),
+            )
+            statement.execute(
+                """
+                CREATE TABLE IF NOT EXISTS activity_suggestion_items (
+                    suggestion_id INTEGER NOT NULL,
+                    activity_id INTEGER NOT NULL,
+                    PRIMARY KEY (suggestion_id, activity_id),
+                    FOREIGN KEY (suggestion_id) REFERENCES activity_suggestions(id) ON DELETE RESTRICT
+                )
+                """.trimIndent(),
+            )
+            statement.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scheduled_reminders (
+                    id INTEGER PRIMARY KEY NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+                    text TEXT NOT NULL DEFAULT '',
+                    schedule_type TEXT NOT NULL CHECK (schedule_type IN ('WEEKLY', 'ONE_TIME', 'MONTHLY')),
+                    days_of_week TEXT NOT NULL DEFAULT '',
+                    one_time_epoch_day INTEGER,
+                    day_of_month INTEGER,
+                    time_of_day_millis INTEGER NOT NULL,
+                    condition_type TEXT NOT NULL CHECK (condition_type IN ('ALWAYS', 'ACTIVITY_NOT_TRACKED_TODAY')),
+                    condition_activity_id INTEGER
+                )
+                """.trimIndent(),
+            )
+            statement.execute(
+                """
+                CREATE TABLE IF NOT EXISTS activity_reminder_overrides (
+                    activity_id INTEGER PRIMARY KEY NOT NULL,
+                    mode TEXT NOT NULL CHECK (mode IN ('DISABLED', 'CUSTOM')),
+                    duration_seconds INTEGER NOT NULL DEFAULT 0,
+                    recurrent INTEGER NOT NULL DEFAULT 0 CHECK (recurrent IN (0, 1)),
+                    days_of_week TEXT NOT NULL DEFAULT '',
+                    dnd_start_millis INTEGER NOT NULL DEFAULT 0,
+                    dnd_end_millis INTEGER NOT NULL DEFAULT 0
+                )
+                """.trimIndent(),
+            )
+        }
+    }
+
+    private fun createAutomationIndexes(connection: Connection) {
+        connection.createStatement().use { statement ->
+            statement.execute("CREATE INDEX IF NOT EXISTS index_complex_rule_tags_tag ON complex_rule_tags(tag_id)")
+            statement.execute("CREATE INDEX IF NOT EXISTS index_activity_suggestions_activity ON activity_suggestions(activity_id)")
+            statement.execute("CREATE INDEX IF NOT EXISTS index_activity_suggestion_items_activity ON activity_suggestion_items(activity_id)")
+            statement.execute("CREATE INDEX IF NOT EXISTS index_scheduled_reminders_enabled ON scheduled_reminders(enabled)")
         }
     }
 

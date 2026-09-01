@@ -64,6 +64,7 @@ private enum class DesktopModernTab(val title: String, val mark: String) {
     HISTORY("Записи", "З"),
     STATISTICS("Статистика", "С"),
     GOALS("Цели", "Ц"),
+    AUTOMATION("Автоматизация", "А"),
     ARCHIVE("Архив", "А"),
 }
 
@@ -136,6 +137,7 @@ fun DesktopModernApp(
     var savedFiltersOpen by remember { mutableStateOf(false) }
     var timeSettingsOpen by remember { mutableStateOf(false) }
     var saveFilterOpen by remember { mutableStateOf(false) }
+    var numericTagRequest by remember { mutableStateOf<Pair<Long, Set<Long>>?>(null) }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -187,6 +189,7 @@ fun DesktopModernApp(
                         onManageTags = { tagManagerOpen = true },
                         onManageCategories = { categoryManagerOpen = true },
                         onTimeSettings = { timeSettingsOpen = true },
+                        onNumericTagsRequired = { activityId -> numericTagRequest = activityId to quickActions.requestedNumericTagIds(activityId) },
                         onChanged = onDataChanged,
                     )
 
@@ -248,6 +251,14 @@ fun DesktopModernApp(
                         onChanged = onDataChanged,
                     )
 
+                    DesktopModernTab.AUTOMATION -> ModernAutomationPage(
+                        database = database,
+                        timeService = timeService,
+                        activities = activities,
+                        revision = revision,
+                        onChanged = onDataChanged,
+                    )
+
                     DesktopModernTab.ARCHIVE -> ModernArchivePage(
                         database = database,
                         activities = archived,
@@ -286,6 +297,17 @@ fun DesktopModernApp(
                 activities = activities,
                 onDismiss = { runningRecordEditor = null },
                 onSaved = { runningRecordEditor = null; onDataChanged() },
+            )
+        }
+        numericTagRequest?.let { (activityId, tagIds) ->
+            ModernRuleNumericTagsDialog(
+                tags = database.tags().filter { it.id in tagIds },
+                onDismiss = { numericTagRequest = null },
+                onConfirm = { values ->
+                    quickActions.startWithTags(activityId, values)
+                    numericTagRequest = null
+                    onDataChanged()
+                },
             )
         }
         splitRecordEditor?.let { record ->
@@ -394,6 +416,7 @@ private fun DesktopSidebar(
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun ModernTrackerPage(
     database: DesktopDatabase,
     activityEditorService: DesktopActivityEditorService,
@@ -408,6 +431,7 @@ private fun ModernTrackerPage(
     onManageTags: () -> Unit,
     onManageCategories: () -> Unit,
     onTimeSettings: () -> Unit,
+    onNumericTagsRequired: (Long) -> Unit,
     onChanged: () -> Unit,
 ) {
     val completed = records.filterNot(DesktopTimelineRecord::isRunning)
@@ -415,6 +439,12 @@ private fun ModernTrackerPage(
         .mapValues { (_, list) -> list.sumOf { range.clippedDuration(it.startedAt, it.endedAt) } }
     val total = records.sumOf { range.clippedDuration(it.startedAt, it.endedAt) }
     val runningCount = activities.count { it.startedAt != null }
+    val suggestionIds = remember(records, activities) {
+        DesktopAutomationService(database).suggestionsFor(
+            running = activities.filter { it.startedAt != null }.mapTo(mutableSetOf(), ActivityRow::id),
+            previous = database.previousCompletedRecord()?.activityId,
+        )
+    }
 
     Column(modifier = Modifier.fillMaxSize().padding(DesktopUiTokens.ScreenPadding)) {
         DesktopPageHeader(
@@ -454,6 +484,18 @@ private fun ModernTrackerPage(
             }
         }
         Spacer(Modifier.height(DesktopUiTokens.SectionGap))
+        if (suggestionIds.isNotEmpty()) {
+            DesktopSectionTitle("Подсказки")
+            Spacer(Modifier.height(8.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                activities.filter { it.id in suggestionIds }.forEach { suggested ->
+                    OutlinedButton(onClick = { if (quickActions.toggle(suggested.id) == TimerActionResult.TAG_VALUE_REQUIRED) onNumericTagsRequired(suggested.id) }) {
+                        Text(listOf(suggested.icon, suggested.name).filter(String::isNotBlank).joinToString(" "))
+                    }
+                }
+            }
+            Spacer(Modifier.height(DesktopUiTokens.SectionGap))
+        }
         DesktopSectionTitle("Активности")
         Spacer(Modifier.height(12.dp))
         if (activities.isEmpty()) {
@@ -473,7 +515,7 @@ private fun ModernTrackerPage(
                         categories = tagCategoryService.categories()
                             .filter { it.id in database.categoryIdsForActivity(activity.id) },
                         pinned = activity.id in quickActions.state.pinned.map(TrayActivity::id),
-                        onToggle = { quickActions.toggle(activity.id) },
+                        onToggle = { if (quickActions.toggle(activity.id) == TimerActionResult.TAG_VALUE_REQUIRED) onNumericTagsRequired(activity.id) },
                         onEdit = { onEditActivity(activity) },
                         onArchive = { database.archiveActivity(activity.id); onChanged() },
                         onPin = { quickActions.setPinned(activity.id, !it); onChanged() },

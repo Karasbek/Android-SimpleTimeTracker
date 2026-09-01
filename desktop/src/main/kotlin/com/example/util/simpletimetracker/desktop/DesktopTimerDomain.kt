@@ -48,12 +48,14 @@ enum class TimerActionResult {
     ALREADY_RUNNING,
     NOT_RUNNING,
     ACTIVITY_UNAVAILABLE,
+    TAG_VALUE_REQUIRED,
 }
 
 class DesktopTimerService(
     private val repository: DesktopTimerRepository,
     private val preferences: DesktopSemanticPreferences,
     private val currentTimeMillis: () -> Long = System::currentTimeMillis,
+    private val complexRuleProcessor: DesktopComplexRuleProcessor? = null,
 ) {
 
     val allowMultitasking: Boolean
@@ -86,6 +88,25 @@ class DesktopTimerService(
         comment = "",
     )
 
+    /** Completes the single shared start flow after a rule asks for numeric tag values. */
+    @Synchronized
+    fun startWithTags(activityId: Long, tags: List<DesktopRecordTag>): TimerActionResult = start(
+        activityId = activityId,
+        tags = tags,
+        comment = "",
+    )
+
+    /** IDs whose numeric values a matching AssignTag rule asks the user to choose. */
+    fun requestedNumericTagIds(activityId: Long): Set<Long> {
+        val timestamp = currentTimeMillis()
+        val running = repository.runningRecords().filter { it.activityId != activityId }
+        return complexRuleProcessor?.process(
+            timestamp,
+            activityId,
+            running.mapTo(mutableSetOf(), DesktopRunningRecord::activityId),
+        )?.tagIdsToSelectValueOnStart.orEmpty()
+    }
+
     @Synchronized
     fun repeat(previous: DesktopPreviousRecord): TimerActionResult = start(
         activityId = previous.activityId,
@@ -107,13 +128,20 @@ class DesktopTimerService(
         }
 
         val timestamp = currentTimeMillis()
-        if (!preferences.allowMultitasking) {
-            repository.runningRecords()
-                .filter { it.activityId != activityId }
+        val running = repository.runningRecords().filter { it.activityId != activityId }
+        val rules = complexRuleProcessor?.process(timestamp, activityId, running.mapTo(mutableSetOf(), DesktopRunningRecord::activityId))
+        val requiredRuleValues = rules?.tagIdsToSelectValueOnStart.orEmpty()
+        if (requiredRuleValues.any { required -> tags.none { it.tagId == required && it.numericValue != null } }) {
+            return TimerActionResult.TAG_VALUE_REQUIRED
+        }
+        val multitaskingAllowed = rules?.allowMultitasking ?: preferences.allowMultitasking
+        if (!multitaskingAllowed) {
+            val onlyPrevious = rules?.disallowOnlyPreviousActivityIds.orEmpty()
+            running.filter { onlyPrevious.isEmpty() || it.activityId in onlyPrevious }
                 .forEach { stopAt(it, timestamp) }
         }
 
-        val actualTags = mergeTags(tags, repository.defaultTagsForActivity(activityId))
+        val actualTags = mergeTags(tags + rules.orEmptyTags(), repository.defaultTagsForActivity(activityId))
 
         if (activity.defaultDurationSeconds > 0) {
             val endedAt = timestamp + activity.defaultDurationSeconds * 1000L
@@ -148,6 +176,8 @@ class DesktopTimerService(
             TimerActionResult.ACTIVITY_UNAVAILABLE
         }
     }
+
+    private fun DesktopComplexRuleResult?.orEmptyTags(): List<DesktopRecordTag> = this?.assignedTags.orEmpty()
 
     @Synchronized
     fun stop(activityId: Long): TimerActionResult {

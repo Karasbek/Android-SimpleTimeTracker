@@ -83,10 +83,20 @@ class DesktopQuickActions(
     }
 
     @Synchronized
-    fun toggle(activityId: Long) {
-        timerService.toggle(activityId)
+    fun toggle(activityId: Long): TimerActionResult {
+        val result = timerService.toggle(activityId)
         publish(buildState())
+        return result
     }
+
+    @Synchronized
+    fun startWithTags(activityId: Long, tags: List<DesktopRecordTag>): TimerActionResult {
+        val result = timerService.startWithTags(activityId, tags)
+        publish(buildState())
+        return result
+    }
+
+    fun requestedNumericTagIds(activityId: Long): Set<Long> = timerService.requestedNumericTagIds(activityId)
 
     val allowMultitasking: Boolean
         get() = timerService.allowMultitasking
@@ -126,6 +136,7 @@ class DesktopQuickActions(
             TimerActionResult.ACTIVITY_UNAVAILABLE,
             TimerActionResult.NOT_RUNNING,
             TimerActionResult.STOPPED,
+            TimerActionResult.TAG_VALUE_REQUIRED,
             -> RepeatPreviousResult.NO_PREVIOUS
         }
         publish(buildState())

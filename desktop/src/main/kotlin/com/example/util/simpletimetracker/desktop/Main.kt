@@ -433,13 +433,17 @@ fun DesktopApp(
 fun main() = application {
     val database = remember { DesktopDatabase() }
     val semanticPreferences = remember { FileDesktopSemanticPreferences() }
+    val timeService = remember { DesktopTimeService(semanticPreferences) }
     val timerService = remember {
-        DesktopTimerService(database, semanticPreferences)
+        DesktopTimerService(
+            repository = database,
+            preferences = semanticPreferences,
+            complexRuleProcessor = DesktopComplexRuleProcessor(database, timeService),
+        )
     }
     val recordService = remember { DesktopRecordService(database) }
     val tagCategoryService = remember { DesktopTagCategoryService(database) }
     val activityEditorService = remember { DesktopActivityEditorService(database) }
-    val timeService = remember { DesktopTimeService(semanticPreferences) }
     val recordsRangeService = remember { DesktopRecordsRangeService(database, semanticPreferences) }
     val savedFilterService = remember { DesktopSavedFilterService(database) }
     val quickActions = remember {
