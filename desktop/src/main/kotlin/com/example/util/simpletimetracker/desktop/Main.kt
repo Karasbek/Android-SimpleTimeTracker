@@ -448,6 +448,8 @@ fun main() = application {
     val savedFilterService = remember { DesktopSavedFilterService(database) }
     val pomodoroService = remember { DesktopPomodoroService() }
     val pomodoroBackground = remember { DesktopPomodoroBackgroundAdapter(pomodoroService).also(DesktopPomodoroBackgroundAdapter::start) }
+    val reminderDelivery = remember { DesktopReminderDeliveryService(database, timeService) }
+    val reminderBackground = remember { DesktopReminderBackgroundAdapter(reminderDelivery).also(DesktopReminderBackgroundAdapter::start) }
     val quickActions = remember {
         DesktopQuickActions(database, timerService, DesktopPinnedActivitiesStore())
     }
@@ -505,6 +507,7 @@ fun main() = application {
             tray = null
             trayActionsExecutor.shutdown()
             pomodoroBackground.close()
+            reminderBackground.close()
         }
     }
 
