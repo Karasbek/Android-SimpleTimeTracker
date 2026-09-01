@@ -66,6 +66,7 @@ private enum class DesktopModernTab(val title: String, val mark: String) {
     GOALS("Цели", "Ц"),
     POMODORO("Pomodoro", "П"),
     AUTOMATION("Автоматизация", "А"),
+    DATA("Данные", "Д"),
     ARCHIVE("Архив", "А"),
 }
 
@@ -261,6 +262,11 @@ fun DesktopModernApp(
                         activities = activities,
                         revision = revision,
                         onChanged = onDataChanged,
+                    )
+
+                    DesktopModernTab.DATA -> ModernBackupDataPage(
+                        database = database,
+                        preferences = semanticPreferences,
                     )
 
                     DesktopModernTab.ARCHIVE -> ModernArchivePage(
