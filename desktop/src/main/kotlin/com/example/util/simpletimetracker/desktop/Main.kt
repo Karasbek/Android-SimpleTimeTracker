@@ -446,6 +446,8 @@ fun main() = application {
     val activityEditorService = remember { DesktopActivityEditorService(database) }
     val recordsRangeService = remember { DesktopRecordsRangeService(database, semanticPreferences) }
     val savedFilterService = remember { DesktopSavedFilterService(database) }
+    val pomodoroService = remember { DesktopPomodoroService() }
+    val pomodoroBackground = remember { DesktopPomodoroBackgroundAdapter(pomodoroService).also(DesktopPomodoroBackgroundAdapter::start) }
     val quickActions = remember {
         DesktopQuickActions(database, timerService, DesktopPinnedActivitiesStore())
     }
@@ -502,6 +504,7 @@ fun main() = application {
             tray?.shutdown()
             tray = null
             trayActionsExecutor.shutdown()
+            pomodoroBackground.close()
         }
     }
 
@@ -532,6 +535,7 @@ fun main() = application {
             timeService = timeService,
             recordsRangeService = recordsRangeService,
             savedFilterService = savedFilterService,
+            pomodoroService = pomodoroService,
             quickActions = quickActions,
             revision = revision,
             onDataChanged = quickActions::refresh,

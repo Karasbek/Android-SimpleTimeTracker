@@ -64,6 +64,7 @@ private enum class DesktopModernTab(val title: String, val mark: String) {
     HISTORY("Записи", "З"),
     STATISTICS("Статистика", "С"),
     GOALS("Цели", "Ц"),
+    POMODORO("Pomodoro", "П"),
     AUTOMATION("Автоматизация", "А"),
     ARCHIVE("Архив", "А"),
 }
@@ -110,6 +111,7 @@ fun DesktopModernApp(
     timeService: DesktopTimeService,
     recordsRangeService: DesktopRecordsRangeService,
     savedFilterService: DesktopSavedFilterService,
+    pomodoroService: DesktopPomodoroService,
     quickActions: DesktopQuickActions,
     revision: Int,
     onDataChanged: () -> Unit,
@@ -250,6 +252,8 @@ fun DesktopModernApp(
                         revision = revision,
                         onChanged = onDataChanged,
                     )
+
+                    DesktopModernTab.POMODORO -> ModernPomodoroPage(pomodoroService)
 
                     DesktopModernTab.AUTOMATION -> ModernAutomationPage(
                         database = database,
