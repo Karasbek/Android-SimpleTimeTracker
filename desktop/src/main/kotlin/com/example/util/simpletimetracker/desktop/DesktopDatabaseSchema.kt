@@ -3,7 +3,7 @@ package com.example.util.simpletimetracker.desktop
 import java.sql.Connection
 
 internal object DesktopDatabaseSchema {
-    const val CURRENT_VERSION = 8
+    const val CURRENT_VERSION = 9
     private const val LEGACY_VERSION = 1
 
     fun initialize(connection: Connection) {
@@ -41,6 +41,7 @@ internal object DesktopDatabaseSchema {
                 5 -> migrate5To6(connection)
                 6 -> migrate6To7(connection)
                 7 -> migrate7To8(connection)
+                8 -> migrate8To9(connection)
                 else -> error("Missing desktop database migration from version $version")
             }
             version++
@@ -134,6 +135,12 @@ internal object DesktopDatabaseSchema {
         }
     }
 
+    /** Android-compatible goals are product data, not a desktop UI preference. */
+    private fun migrate8To9(connection: Connection) {
+        createGoalsTable(connection)
+        createGoalsIndexes(connection)
+    }
+
     private fun hasColumn(connection: Connection, table: String, column: String): Boolean =
         connection.createStatement().use { statement ->
             statement.executeQuery("PRAGMA table_info($table)").use { result ->
@@ -194,12 +201,14 @@ internal object DesktopDatabaseSchema {
         createTagCategoryTables(connection)
         createSavedFilterTables(connection)
         createAdvancedSavedFilterTables(connection)
+        createGoalsTable(connection)
     }
 
     private fun createIndexes(connection: Connection) {
         createCoreIndexes(connection)
         createTagCategoryIndexes(connection)
         createSavedFilterIndexes(connection)
+        createGoalsIndexes(connection)
     }
 
     private fun createCoreIndexes(connection: Connection) {
@@ -363,6 +372,36 @@ internal object DesktopDatabaseSchema {
                     FOREIGN KEY (filter_id) REFERENCES saved_record_filters(id) ON DELETE RESTRICT
                 )
                 """.trimIndent(),
+            )
+        }
+    }
+
+    private fun createGoalsTable(connection: Connection) {
+        connection.createStatement().use { statement ->
+            statement.execute(
+                """
+                CREATE TABLE IF NOT EXISTS record_type_goals (
+                    id INTEGER PRIMARY KEY NOT NULL,
+                    owner_id INTEGER NOT NULL,
+                    owner_type TEXT NOT NULL CHECK (owner_type IN ('ACTIVITY', 'CATEGORY', 'TAG')),
+                    goal_range TEXT NOT NULL CHECK (goal_range IN ('SESSION', 'DAILY', 'WEEKLY', 'MONTHLY')),
+                    measure TEXT NOT NULL CHECK (measure IN ('DURATION', 'COUNT')),
+                    subtype TEXT NOT NULL CHECK (subtype IN ('GOAL', 'LIMIT')),
+                    value INTEGER NOT NULL CHECK (value >= 0),
+                    days_of_week TEXT NOT NULL DEFAULT '1234567'
+                )
+                """.trimIndent(),
+            )
+        }
+    }
+
+    private fun createGoalsIndexes(connection: Connection) {
+        connection.createStatement().use { statement ->
+            statement.execute(
+                "CREATE INDEX IF NOT EXISTS index_record_type_goals_owner ON record_type_goals(owner_type, owner_id)",
+            )
+            statement.execute(
+                "CREATE INDEX IF NOT EXISTS index_record_type_goals_range ON record_type_goals(goal_range)",
             )
         }
     }

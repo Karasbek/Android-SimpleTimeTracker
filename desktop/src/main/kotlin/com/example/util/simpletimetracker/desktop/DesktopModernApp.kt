@@ -63,6 +63,7 @@ private enum class DesktopModernTab(val title: String, val mark: String) {
     TRACKER("Трекер", "Т"),
     HISTORY("Записи", "З"),
     STATISTICS("Статистика", "С"),
+    GOALS("Цели", "Ц"),
     ARCHIVE("Архив", "А"),
 }
 
@@ -118,6 +119,8 @@ fun DesktopModernApp(
     var historyAllRecords by remember { mutableStateOf(false) }
     var calendarOpen by remember { mutableStateOf(false) }
     var customRangeOpen by remember { mutableStateOf(false) }
+    var statisticsCustomRange by remember { mutableStateOf<DesktopTimeRange?>(null) }
+    var statisticsCustomRangeOpen by remember { mutableStateOf(false) }
     var rangeLength by remember { mutableStateOf(DesktopRangeLength.DAY) }
     var activeFilter by remember { mutableStateOf(DesktopRecordFilter.EMPTY) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -152,14 +155,14 @@ fun DesktopModernApp(
             else -> timeService.day(selectedDate)
         }
     }
-    val statisticsRange = remember(revision, selectedDate, rangeLength) {
-        timeService.range(rangeLength, selectedDate)
+    val statisticsRange = remember(revision, selectedDate, rangeLength, statisticsCustomRange) {
+        statisticsCustomRange ?: timeService.range(rangeLength, selectedDate)
     }
     val trackerRecords = remember(revision, today, now) { recordsRangeService.get(todayRange) }
     val historyRecords = remember(revision, selectedDate, activeFilter, now, historyCustomRange, historyAllRecords, semanticPreferences.showUntrackedInRecords) {
         recordsRangeService.get(historyRange, activeFilter, semanticPreferences.showUntrackedInRecords || activeFilter.recordKind == DesktopRecordKindFilter.UNTRACKED)
     }
-    val statisticsRecords = remember(revision, selectedDate, rangeLength, activeFilter, now) {
+    val statisticsRecords = remember(revision, selectedDate, rangeLength, statisticsCustomRange, activeFilter, now) {
         recordsRangeService.get(statisticsRange, activeFilter, activeFilter.recordKind == DesktopRecordKindFilter.UNTRACKED)
     }
 
@@ -226,10 +229,23 @@ fun DesktopModernApp(
                         filter = activeFilter,
                         onDateChange = { selectedDate = it },
                         onRangeLengthChange = { rangeLength = it },
+                        onOpenCustomRange = { statisticsCustomRangeOpen = true },
+                        customRangeActive = statisticsCustomRange != null,
+                        onClearCustomRange = { statisticsCustomRange = null },
                         onOpenFilters = { filterEditorOpen = true },
                         onOpenSavedFilters = { savedFiltersOpen = true },
                         onSaveFilter = { saveFilterOpen = true },
                         onClearFilter = { activeFilter = DesktopRecordFilter.EMPTY },
+                    )
+
+                    DesktopModernTab.GOALS -> ModernGoalsPage(
+                        database = database,
+                        timeService = timeService,
+                        recordsRangeService = recordsRangeService,
+                        date = selectedDate,
+                        onDateChange = { selectedDate = it },
+                        revision = revision,
+                        onChanged = onDataChanged,
                     )
 
                     DesktopModernTab.ARCHIVE -> ModernArchivePage(
@@ -334,6 +350,13 @@ fun DesktopModernApp(
                 initial = historyCustomRange,
                 onDismiss = { customRangeOpen = false },
                 onApply = { historyCustomRange = it; historyAllRecords = false; customRangeOpen = false },
+            )
+        }
+        if (statisticsCustomRangeOpen) {
+            ModernCustomRangeDialog(
+                initial = statisticsCustomRange,
+                onDismiss = { statisticsCustomRangeOpen = false },
+                onApply = { statisticsCustomRange = it; statisticsCustomRangeOpen = false },
             )
         }
     }
@@ -731,24 +754,23 @@ private fun ModernStatisticsPage(
     filter: DesktopRecordFilter,
     onDateChange: (LocalDate) -> Unit,
     onRangeLengthChange: (DesktopRangeLength) -> Unit,
+    onOpenCustomRange: () -> Unit,
+    customRangeActive: Boolean,
+    onClearCustomRange: () -> Unit,
     onOpenFilters: () -> Unit,
     onOpenSavedFilters: () -> Unit,
     onSaveFilter: () -> Unit,
     onClearFilter: () -> Unit,
 ) {
-    val totals = records.groupBy(DesktopTimelineRecord::activityId).map { (id, list) ->
-        ModernStatisticTotal(
-            id = id,
-            name = list.first().activityName,
-            icon = list.first().icon,
-            color = list.first().colorInt,
-            duration = list.sumOf { range.clippedDuration(it.startedAt, it.endedAt) },
-        )
-    }.sortedByDescending(ModernStatisticTotal::duration)
+    var grouping by remember { mutableStateOf(DesktopStatisticsGrouping.ACTIVITY) }
+    var drillDown by remember { mutableStateOf<DesktopStatisticsBreakdown?>(null) }
+    val totals = remember(records, range, grouping) {
+        DesktopDetailedStatisticsService(database).breakdown(records, range, grouping)
+    }
     Column(modifier = Modifier.fillMaxSize().padding(DesktopUiTokens.ScreenPadding)) {
         DesktopPageHeader(
             title = "Статистика",
-            subtitle = "${date.format(DateTimeFormatter.ofPattern("LLLL yyyy"))} · ${durationText(totals.sumOf(ModernStatisticTotal::duration))}",
+            subtitle = "${date.format(DateTimeFormatter.ofPattern("LLLL yyyy"))} · ${durationText(totals.sumOf(DesktopStatisticsBreakdown::durationMillis))}",
             actions = {
                 OutlinedButton(onClick = { onDateChange(date.minusDays(1)) }) { Text("←") }
                 Spacer(Modifier.width(6.dp))
@@ -768,6 +790,8 @@ private fun ModernStatisticsPage(
                 if (item == rangeLength) Button(onClick = {}) { Text(title) }
                 else OutlinedButton(onClick = { onRangeLengthChange(item) }) { Text(title) }
             }
+            OutlinedButton(onClick = onOpenCustomRange) { Text("Диапазон") }
+            if (customRangeActive) TextButton(onClick = onClearCustomRange) { Text("Сбросить диапазон") }
             Spacer(Modifier.width(12.dp))
             OutlinedButton(onClick = onOpenFilters) { Text("Фильтр") }
             TextButton(onClick = onOpenSavedFilters) { Text("Сохранённые") }
@@ -777,21 +801,40 @@ private fun ModernStatisticsPage(
                 TextButton(onClick = onSaveFilter) { Text("Сохранить") }
             }
         }
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            DesktopStatisticsGrouping.entries.forEach { item ->
+                val label = when (item) {
+                    DesktopStatisticsGrouping.ACTIVITY -> "Активности"
+                    DesktopStatisticsGrouping.CATEGORY -> "Категории"
+                    DesktopStatisticsGrouping.TAG -> "Теги"
+                }
+                if (item == grouping) Button(onClick = {}) { Text(label) }
+                else OutlinedButton(onClick = { grouping = item }) { Text(label) }
+            }
+        }
+        if (totals.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            ModernStatisticsPieChart(totals)
+        }
         Spacer(Modifier.height(DesktopUiTokens.SectionGap))
         if (totals.isEmpty()) {
             ModernEmptyState("За выбранный диапазон нет данных.")
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxSize()) {
-                items(totals, key = ModernStatisticTotal::id) { item ->
-                    val share = item.duration.toFloat() / totals.sumOf(ModernStatisticTotal::duration).coerceAtLeast(1L)
-                    Card(elevation = 0.dp, shape = MaterialTheme.shapes.medium) {
+                items(totals, key = DesktopStatisticsBreakdown::id) { item ->
+                    val share = item.durationMillis.toFloat() / totals.sumOf(DesktopStatisticsBreakdown::durationMillis).coerceAtLeast(1L)
+                    Card(modifier = Modifier.fillMaxWidth().clickable { drillDown = item }, elevation = 0.dp, shape = MaterialTheme.shapes.medium) {
                         Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                 Text(listOf(item.icon, item.name).filter(String::isNotBlank).joinToString(" "), modifier = Modifier.weight(1f), style = MaterialTheme.typography.h6)
-                                Text(durationText(item.duration), style = MaterialTheme.typography.h6)
+                                Text(durationText(item.durationMillis), style = MaterialTheme.typography.h6)
                             }
                             Box(Modifier.fillMaxWidth().height(7.dp).background(DesktopUiTokens.Divider, RoundedCornerShape(8.dp))) {
                                 Box(Modifier.fillMaxWidth(share).height(7.dp).background(identityColor(item.color, DesktopUiTokens.Primary), RoundedCornerShape(8.dp)))
+                            }
+                            item.numericValueSum?.let { sum ->
+                                Text("Сумма числовых значений: ${formatDesktopTagValue(sum)} · ${item.numericValueCount}", style = MaterialTheme.typography.body2, color = DesktopUiTokens.SecondaryText)
                             }
                         }
                     }
@@ -799,9 +842,17 @@ private fun ModernStatisticsPage(
             }
         }
     }
+    drillDown?.let { selected ->
+        val detailRecords = records.filter { record ->
+            !record.isUntracked && when (grouping) {
+                DesktopStatisticsGrouping.ACTIVITY -> record.activityId == selected.id
+                DesktopStatisticsGrouping.CATEGORY -> if (selected.id == 0L) record.categoryIds.isEmpty() else selected.id in record.categoryIds
+                DesktopStatisticsGrouping.TAG -> if (selected.id == 0L) record.tags.isEmpty() else record.tags.any { it.tagId == selected.id }
+            }
+        }
+        ModernStatisticsDrillDownDialog(selected.name, detailRecords, range) { drillDown = null }
+    }
 }
-
-private data class ModernStatisticTotal(val id: Long, val name: String, val icon: String, val color: String, val duration: Long)
 
 @Composable
 private fun ModernArchivePage(database: DesktopDatabase, activities: List<ActivityRow>, onChanged: () -> Unit) {
